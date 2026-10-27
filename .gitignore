@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+
+# 本地部署产物
+*.local.json
+.env
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+*.tgz

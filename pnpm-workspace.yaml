@@ -1,0 +1,4 @@
+minimumReleaseAgeExclude:
+  - cortico@0.2.7
+allowBuilds:
+  esbuild: true
