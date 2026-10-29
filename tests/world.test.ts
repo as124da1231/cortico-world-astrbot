@@ -642,8 +642,8 @@ describe('环境提示词变量', () => {
     await Promise.resolve();
 
     const vars = world.envPromptVars();
-    expect(vars['astrbot.conversations']).toContain('测试群');
-    expect(vars['astrbot.lastConversation']).toContain('测试群');
+    expect(vars['astrbot.conversations']).toContain('123456');
+    expect(vars['astrbot.lastConversation']).toContain('123456');
   });
 });
 

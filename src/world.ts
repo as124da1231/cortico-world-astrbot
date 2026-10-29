@@ -236,11 +236,11 @@ export class AstrbotWorld implements World {
       this.convs.size === 0
         ? ''
         : [...this.convs.values()]
-            .map((c) => `- ${c.kind === 'group' ? '群' : '私聊'}「${c.name ?? c.id}」id=${c.id}`)
+            .map((c) => `- ${c.kind === 'group' ? '群' : '私聊'} id=${c.id}`)
             .join('\n');
 
     const last = this.lastConv
-      ? `${this.lastConv.kind === 'group' ? '群' : '私聊'}「${this.lastConv.name ?? this.lastConv.id}」`
+      ? `${this.lastConv.kind === 'group' ? '群' : '私聊'} id=${this.lastConv.id}`
       : '';
 
     const owners = this.driver?.ownerIds ?? [];

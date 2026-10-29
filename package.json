@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-astrbot",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "type": "module",
   "description": "Cortico World: join QQ conversations through an AstrBot bridge, so the bot keeps AstrBot's plugins while a Cortico persona drives the talking",
   "license": "MIT",
