@@ -1,8 +1,8 @@
 {
   "name": "cortico-world-astrbot",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "type": "module",
-  "description": "Cortico World: join QQ conversations through an AstrBot bridge, so the bot keeps AstrBot's plugins while a Cortico persona drives the talking",
+  "description": "让 Cortico 人格进 QQ 群交流，AstrBot 保留插件与账号 / Join QQ conversations through an AstrBot bridge, keeping AstrBot plugins while Cortico persona chats",
   "license": "MIT",
   "author": "as124da1231",
   "repository": {
@@ -35,6 +35,16 @@
       "external-setup",
       "unofficial-api"
     ],
+    "locales": {
+      "zh": {
+        "displayName": "AstrBot · QQ",
+        "description": "让 Cortico 的人格 Bot 进 QQ 群说话，同时把 QQ 账号与插件能力留在 AstrBot 手里。"
+      },
+      "en": {
+        "displayName": "AstrBot · QQ",
+        "description": "Join QQ conversations through an AstrBot bridge, keeping AstrBot's plugins and accounts while a Cortico persona drives the talking."
+      }
+    },
     "describe": "describe.json"
   },
   "files": [
