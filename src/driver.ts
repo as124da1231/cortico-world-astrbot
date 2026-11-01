@@ -64,6 +64,8 @@ export interface SendResult {
   ok: boolean;
   /** ok 为 false 时的原因，可直接进工具回执。 */
   error?: string;
+  /** 失败时消息是否可能已经发出；true 表示「结果未知」，不要直接重试。 */
+  uncertain?: boolean;
   /** 桥是否真的把这条发成了语音（TTS 失败时会退回文字）。 */
   voice?: boolean;
   /** 成功但有需要说明的事，例如「TTS 没开，已改发文字」。 */
@@ -141,6 +143,8 @@ export interface BridgeDriverOptions {
   reconnectMaxMs?: number;
   /** 一次发送等确认的超时。 */
   sendTimeoutMs?: number;
+  /** WebSocket 握手（HTTP Upgrade）的超时；0 表示不设。 */
+  handshakeTimeoutMs?: number;
   /** 一次工具调用等回执的超时。 */
   toolTimeoutMs?: number;
   /** 心跳间隔；0 表示不做活性检测。 */
@@ -155,8 +159,20 @@ interface PendingSend {
   timer: ReturnType<typeof setTimeout>;
 }
 
-/** 发送确认的默认超时。 */
-export const DEFAULT_SEND_TIMEOUT_MS = 15_000;
+/** 发送确认的默认超时。要覆盖桥侧的排队 + TTS + 平台发送。 */
+export const DEFAULT_SEND_TIMEOUT_MS = 30_000;
+
+/** 带图发送额外等待：图片要经桥转给 QQ，慢网下会久一点。 */
+export const IMAGE_SEND_EXTRA_MS = 20_000;
+
+/** 语音发送额外等待：桥侧 TTS 最多等 30 秒，再加平台发送。 */
+export const VOICE_SEND_EXTRA_MS = 40_000;
+
+/** WebSocket 握手默认超时；对端只接受 TCP、不回 Upgrade 时靠它收尾。 */
+export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+
+/** 握手超时之外再留一点余量，防止底层没发 close。 */
+const HANDSHAKE_GUARD_EXTRA_MS = 2_000;
 
 /** 工具回执的默认超时：有些工具本身会查网、生成图片，给宽一点。 */
 export const DEFAULT_TOOL_TIMEOUT_MS = 90_000;
@@ -280,7 +296,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
-    this.rejectAllPending('驱动已停止');
+    this.rejectAllPending('驱动已停止', true);
     const ws = this.ws;
     this.ws = undefined;
     const was = this.connected;
@@ -304,11 +320,15 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       // 带图/语音的帧更大、更慢，给桥多一点时间。
       const timeout =
         (this.opts.sendTimeoutMs ?? DEFAULT_SEND_TIMEOUT_MS) +
-        (image ? 15_000 : 0) +
-        (voice ? 20_000 : 0);
+        (image ? IMAGE_SEND_EXTRA_MS : 0) +
+        (voice ? VOICE_SEND_EXTRA_MS : 0);
       const timer = setTimeout(() => {
         this.pending.delete(rid);
-        resolve({ ok: false, error: `桥没有在 ${timeout}ms 内确认` });
+        resolve({
+          ok: false,
+          uncertain: true,
+          error: `桥没有在 ${timeout}ms 内确认，消息可能已经发出`,
+        });
       }, timeout);
       this.pending.set(rid, { resolve, timer });
       const frame: Record<string, unknown> = {
@@ -336,18 +356,23 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       return;
     }
     let settled = false;
+    let guard: ReturnType<typeof setTimeout> | undefined;
     const settle = (): void => {
       if (!settled) {
         settled = true;
+        if (guard) clearTimeout(guard);
         onSettled?.();
       }
     };
 
     const token = this.opts.token;
+    const handshakeMs = this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     let ws: WebSocket;
     try {
       ws = new WebSocket(this.opts.wsUrl, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        // 对端只接受 TCP、不回 101 时，ws 自己不会超时；这里必须给。
+        ...(handshakeMs > 0 ? { handshakeTimeout: handshakeMs } : {}),
       });
     } catch (err) {
       this.log.warn('桥地址无法解析', {
@@ -359,6 +384,22 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       return;
     }
     this.ws = ws;
+
+    if (handshakeMs > 0) {
+      guard = setTimeout(() => {
+        if (this.stopped || this.ws !== ws || settled) return;
+        this.log.warn('桥连接在握手超时内没有完成，重建连接', {
+          wsUrl: this.opts.wsUrl,
+          timeoutMs: handshakeMs + HANDSHAKE_GUARD_EXTRA_MS,
+        });
+        try {
+          ws.terminate();
+        } catch {
+          // 已经断了就算了；close 会接手重连。
+        }
+        settle();
+      }, handshakeMs + HANDSHAKE_GUARD_EXTRA_MS);
+    }
 
     ws.on('open', () => {
       if (this.stopped || this.ws !== ws) {
@@ -419,7 +460,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
         this.stopHeartbeat();
         this.ws = undefined;
         this.connected = false;
-        this.rejectAllPending('与桥的连接已断开');
+        this.rejectAllPending('与桥的连接已断开', true);
         if (wasConnected) this.log.info('与 AstrBot 桥的连接已断开');
       }
       settle();
@@ -479,10 +520,20 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   }
 
   private handleFrame(raw: string): void {
-    let frame: Record<string, unknown>;
+    // 一帧坏数据不能把整个 Coo 带下去：事件回调里抛错会升级成
+    // uncaughtException，宿主通常会直接关机。
     try {
-      frame = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
+      this.handleFrameUnsafe(raw);
+    } catch (err) {
+      this.log.error('处理桥帧失败，已忽略', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private handleFrameUnsafe(raw: string): void {
+    const frame = parseFrame(raw);
+    if (!frame) {
       this.log.warn('收到无法解析的帧，已忽略');
       return;
     }
@@ -506,7 +557,11 @@ export class AstrbotBridgeDriver implements BridgeDriver {
               voice: frame.voice === true,
               note: typeof frame.note === 'string' ? frame.note : undefined,
             }
-          : { ok: false, error: String(frame.error ?? '桥拒绝发送') },
+          : {
+              ok: false,
+              error: String(frame.error ?? '桥拒绝发送'),
+              uncertain: frame.uncertain === true,
+            },
       );
       return;
     }
@@ -632,10 +687,10 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     }
   }
 
-  private rejectAllPending(reason: string): void {
+  private rejectAllPending(reason: string, uncertain = false): void {
     for (const call of this.pending.values()) {
       clearTimeout(call.timer);
-      call.resolve({ ok: false, error: reason });
+      call.resolve({ ok: false, error: reason, uncertain });
     }
     this.pending.clear();
     for (const call of this.pendingTools.values()) {
@@ -644,6 +699,21 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     }
     this.pendingTools.clear();
   }
+}
+
+/**
+ * 解析一帧文本。合法 JSON 不代表是对象：`null`（以及数字、字符串、数组）
+ * 都不能往下走，否则 `frame.t` 会在 null 上抛 TypeError。
+ */
+export function parseFrame(raw: string): Record<string, unknown> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
 }
 
 /** 把一帧 `msg` 收敛成 BridgeMessage；形状不对时返回 null。 */

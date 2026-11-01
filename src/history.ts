@@ -58,7 +58,18 @@ export function readLatest(
   return picked.reverse();
 }
 
-/** 关键词搜索该会话，每处命中带前后若干条，按时间升序拼接。 */
+/** 一次搜索最多扫多少条事件，防止历史很长时把一次工具调用拖太久。 */
+const MAX_SEARCH_SCAN = 20_000;
+/** 翻页大小。 */
+const SEARCH_PAGE = 500;
+
+/**
+ * 关键词搜索该会话，每处命中带前后若干条，按时间升序拼接。
+ *
+ * 不能直接用 store.grep：它的 limit 在「按会话过滤」之前计数，别的会话
+ * 命中一多，本会话就会被挤成 0 条；它的 context 也不筛会话，可能把
+ * 别的会话的上下文当成命中返回。这里从最新往回翻，先筛会话再匹配。
+ */
 export function search(
   store: EventStoreReader,
   conv: Conv,
@@ -67,16 +78,31 @@ export function search(
   context: number,
   sender?: string,
 ): EventEnvelope[][] {
-  const hits = store.grep({
-    keyword,
-    context,
-    source: 'astrbot',
-    origin: 'external',
-    limit,
-    ...(sender ? { senderKey: sender } : {}),
-  });
+  const needle = keyword.toLowerCase();
+  const hits: EventEnvelope[] = [];
+  let toCursor = store.latestCursor();
+  let scanned = 0;
+
+  while (hits.length < limit && toCursor > 0 && scanned < MAX_SEARCH_SCAN) {
+    const page = store.range({ ...BASE, toCursor, limit: SEARCH_PAGE });
+    if (page.length === 0) break;
+    scanned += page.length;
+    for (let i = page.length - 1; i >= 0 && hits.length < limit; i--) {
+      const e = page[i]!;
+      if (!inConv(e, conv)) continue;
+      if (sender && String(e.senderKey ?? '') !== sender) continue;
+      if (!String(e.text ?? '').toLowerCase().includes(needle)) continue;
+      hits.push(e);
+    }
+    if (page.length < SEARCH_PAGE) break;
+    const first = page[0]!.cursor;
+    if (first <= 1) break;
+    toCursor = first - 1;
+  }
+
   return hits
-    .map((hit) => hit.events.filter((e) => inConv(e, conv)))
+    .reverse()
+    .map((hit) => store.around(hit.cursor, context, context).filter((e) => inConv(e, conv)))
     .filter((group) => group.length > 0);
 }
 

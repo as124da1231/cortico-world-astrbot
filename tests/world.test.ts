@@ -3,7 +3,7 @@ import type { ToolCallContext } from 'cortico/core/types.ts';
 import { ASTRBOT_DEFAULTS, normalizeMode, parseAliases, type AstrbotConfigSection } from '../src/config.ts';
 import { ASTRBOT } from '../src/definition.ts';
 import { AstrbotWorld } from '../src/world.ts';
-import { parseMessage } from '../src/driver.ts';
+import { parseFrame, parseMessage } from '../src/driver.ts';
 import { FakeDriver, FakeHost } from './helpers/fake-bridge.ts';
 
 /** 造一份可改的配置；默认开启，方便测投递。 */
@@ -83,6 +83,30 @@ describe('装配', () => {
     });
     await expect(world.start(host)).resolves.toBeUndefined();
     await world.stop();
+  });
+
+  it('驱动一直连接不返回时，start 到点也会放行', async () => {
+    const host = new FakeHost();
+    const driver = new FakeDriver();
+    driver.startHangs = true;
+    const world = new AstrbotWorld({
+      cfg: config(),
+      timezone: 'Asia/Shanghai',
+      driver,
+      startTimeoutMs: 30,
+    });
+    await expect(world.start(host)).resolves.toBeUndefined();
+    expect(driver.started).toBe(1);
+    await world.stop();
+  });
+
+  it('合法 JSON 但不是对象，不能当成帧', () => {
+    expect(parseFrame('null')).toBeNull();
+    expect(parseFrame('[]')).toBeNull();
+    expect(parseFrame('"x"')).toBeNull();
+    expect(parseFrame('123')).toBeNull();
+    expect(parseFrame('not json')).toBeNull();
+    expect(parseFrame('{"t":"tick"}')).toEqual({ t: 'tick' });
   });
 });
 
@@ -342,6 +366,18 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('桥拒绝了');
   });
 
+  it('结果未知时明确提醒可能已发出，不要直接重试', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    driver.sendResult = { ok: false, uncertain: true, error: '桥没有确认' };
+    const out = await handlerOf(world, 'astrbot_send_message')(
+      { text: '你好', conv_id: '1' },
+      toolCtx(),
+    );
+    expect(typeof out === 'string' ? false : out.failed).toBe(true);
+    expect(typeof out === 'string' ? out : out.text).toContain('可能已经发出');
+    expect(typeof out === 'string' ? out : out.text).toContain('不要直接重发');
+  });
+
   it('超过每分钟上限后拒绝发送', async () => {
     const { driver, world } = await mount({ mode: 'all', maxSendsPerMinute: 1 });
     const send = handlerOf(world, 'astrbot_send_message');
@@ -566,6 +602,59 @@ describe('历史检索', () => {
     );
     expect(text).toContain('没有找到');
   });
+
+  it('别的会话命中再多，也不会把本会话的命中挤掉', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    // 先堆满别的会话的命中，让「先 grep 再过滤」的实现把本会话挤出去。
+    for (let i = 0; i < 25; i++) {
+      driver.emitMessage(
+        groupMsg({
+          id: `b${i}`,
+          text: `别处的找 ${i}`,
+          conv: { kind: 'group', id: '999', name: '别的群' },
+        }),
+      );
+      await Promise.resolve();
+    }
+    driver.emitMessage(groupMsg({ id: 'a1', text: '我们要找的这句' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const text = textOf(
+      await handlerOf(world, 'astrbot_read_history')({
+        conv_id: '123456',
+        conv_kind: 'group',
+        keyword: '找',
+      }, toolCtx()),
+    );
+    expect(text).toContain('我们要找的这句');
+  });
+
+  it('不会把别的会话的上下文当成命中的内容', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    driver.emitMessage(
+      groupMsg({
+        id: 'b1',
+        text: '别处的秘密',
+        conv: { kind: 'group', id: '999', name: '别的群' },
+      }),
+    );
+    await Promise.resolve();
+    driver.emitMessage(groupMsg({ id: 'a1', text: '本群普通聊天' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const text = textOf(
+      await handlerOf(world, 'astrbot_read_history')({
+        conv_id: '123456',
+        conv_kind: 'group',
+        keyword: '秘密',
+        context: 2,
+      }, toolCtx()),
+    );
+    expect(text).toContain('没有找到');
+    expect(text).not.toContain('本群普通聊天');
+  });
 });
 
 describe('主人与截图授权', () => {
@@ -612,6 +701,39 @@ describe('主人与截图授权', () => {
     driver.emitMessage(groupMsg({ role: 'member', sender: { id: '99', name: '路人' } }));
     await Promise.resolve();
     const denied = await handlerOf(world, 'astrbot_send_message')({ image: 'log:shot.jpg' }, toolCtx());
+    expect(typeof denied === 'string' ? false : denied.failed).toBe(true);
+  });
+
+  it('授权只在当前 QQ 轮次有效，桌宠轮次不能拿旧授权发图', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    host.blobs.set('log:shot.jpg', { bytes: new Uint8Array([1, 2, 3]), mime: 'image/jpeg' });
+
+    driver.emitMessage(groupMsg({ id: 'admin1', owner: true, canScreenshot: true }));
+    await Promise.resolve();
+    settle(world, host);
+    world.onTurnEnded();
+
+    const denied = await handlerOf(world, 'astrbot_send_message')({
+      conv_id: '123456',
+      conv_kind: 'group',
+      image: 'log:shot.jpg',
+    }, toolCtx());
+    expect(typeof denied === 'string' ? false : denied.failed).toBe(true);
+  });
+
+  it('当前轮次的授权不能拿去给别的会话发图', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    host.blobs.set('log:shot.jpg', { bytes: new Uint8Array([1, 2, 3]), mime: 'image/jpeg' });
+
+    driver.emitMessage(groupMsg({ id: 'admin1', owner: true, canScreenshot: true }));
+    await Promise.resolve();
+    settle(world, host);
+
+    const denied = await handlerOf(world, 'astrbot_send_message')({
+      conv_id: '999',
+      conv_kind: 'group',
+      image: 'log:shot.jpg',
+    }, toolCtx());
     expect(typeof denied === 'string' ? false : denied.failed).toBe(true);
   });
 

@@ -20,6 +20,7 @@ import {
 } from './config.ts';
 import {
   AstrbotBridgeDriver,
+  DEFAULT_HANDSHAKE_TIMEOUT_MS,
   type BridgeDriver,
   type BridgeMessage,
   type Conv,
@@ -35,6 +36,12 @@ export const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 
 /** 收到带权限的消息后，这个会话在多久内可以发图。 */
 export const SCREENSHOT_GRANT_MS = 120_000;
+
+/**
+ * 等桥完成首次连接的默认上限。到点先让 Coo 继续启动，驱动在后台继续重连；
+ * 单个 World 不该把整条启动链拖死。
+ */
+export const DEFAULT_START_TIMEOUT_MS = 12_000;
 
 /** 从 ISO 时间里取 HH:MM；取不到就返回 --:--。 */
 function hhmm(iso: string | undefined): string {
@@ -56,6 +63,10 @@ export interface AstrbotWorldOptions {
   timezone: string;
   /** 测试用：换掉真实驱动。 */
   driver?: BridgeDriver;
+  /** 首次连接最多等多久；到点先继续启动，后台继续重连。 */
+  startTimeoutMs?: number;
+  /** WebSocket 握手超时；0 表示不设。 */
+  handshakeTimeoutMs?: number;
 }
 
 /** 全部工具的声明；`describe` 与 `tools()` 都取这一份。 */
@@ -189,8 +200,8 @@ export class AstrbotWorld implements World {
   private readonly convs = new Map<string, Conv>();
   /** 最后一条消息所在的会话；工具不指定会话时用它。 */
   private lastConv?: Conv;
-  /** 会话 -> 可以发图的截止时刻；由桥在消息帧里给权限。 */
-  private readonly shotGrants = new Map<string, number>();
+  /** 会话 -> 可发图授权；绑定到给权限的那条消息，轮次结束即失效。 */
+  private readonly shotGrants = new Map<string, { until: number; msgId: string }>();
   /** 发送时间戳，用于每分钟上限。 */
   private sendStamps: number[] = [];
   /** 桥那边启用的工具；只在环境提示词里列出来，不注册成原生工具。 */
@@ -310,6 +321,7 @@ export class AstrbotWorld implements World {
         capabilities: { images: this.acceptsImages(host) },
         reconnectBaseMs: cfg.reconnectBaseMs,
         reconnectMaxMs: cfg.reconnectMaxMs,
+        handshakeTimeoutMs: this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
         log: host.log,
       });
     this.driver = driver;
@@ -369,15 +381,38 @@ export class AstrbotWorld implements World {
         });
     });
 
-    // 连不上不抛错：start 只承诺「尝试过」，桥没起来不该拖垮整个装配。
-    try {
-      await driver.start();
-    } catch (err) {
-      host.log.warn('连接 AstrBot 桥失败', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    // 连不上不抛错，也不无限等：桥没起来或握手卡住都不该拖垮整个装配。
+    // 到点后驱动仍在后台重连，连上会通过 onState 把状态推回来。
+    await this.waitDriverStart(driver, this.opts.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS);
     this.connected = driver.connected;
+  }
+
+  /** 等首次连接，但最多等 timeoutMs；超时只记日志，不终止后台重连。 */
+  private async waitDriverStart(driver: BridgeDriver, timeoutMs: number): Promise<void> {
+    const limit = Math.max(1, timeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), limit);
+    });
+    const started = driver
+      .start()
+      .then(() => true)
+      .catch((err: unknown) => {
+        this.host?.log.warn('连接 AstrBot 桥失败', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return true;
+      });
+    try {
+      const ok = await Promise.race([started, timedOut]);
+      if (!ok) {
+        this.host?.log.warn('连接 AstrBot 桥超时，先继续启动，后台继续重连', {
+          timeoutMs: limit,
+        });
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async stop(): Promise<void> {
@@ -461,7 +496,7 @@ export class AstrbotWorld implements World {
     // 通知不是人说的话，不能拿它撤销授权。
     if (!isNotice) {
       if (msg.canScreenshot) {
-        this.grantScreenshot(msg.conv);
+        this.grantScreenshot(msg.conv, msg.id);
       } else {
         this.shotGrants.delete(`${msg.conv.kind}:${msg.conv.id}`);
       }
@@ -729,7 +764,12 @@ export class AstrbotWorld implements World {
         const result = await driver.send(conv, text, replyTo, image, voice);
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
         if (!result.ok) {
-          return { text: `没有发出：${result.error ?? '未知原因'}`, failed: true };
+          const reason = result.error ?? '未知原因';
+          const lead = result.uncertain ? '没有确认发出' : '没有发出';
+          const hint = result.uncertain
+            ? '；这条可能已经发出，先确认再决定要不要重试，不要直接重发'
+            : '';
+          return { text: `${lead}：${reason}${hint}`, failed: true };
         }
         const what = result.voice
           ? image
@@ -758,19 +798,29 @@ export class AstrbotWorld implements World {
     return this.lastConv;
   }
 
-  /** 记下「这个会话可以发图到什么时候」；顺手清掉过期项，免得表一直长。 */
-  private grantScreenshot(conv: Conv): void {
+  /** 记下「这个会话、这条消息可以发图到什么时候」；顺手清掉过期项。 */
+  private grantScreenshot(conv: Conv, msgId: string): void {
+    if (!msgId) return;
     const now = Date.now();
-    for (const [key, until] of this.shotGrants) {
-      if (until <= now) this.shotGrants.delete(key);
+    for (const [key, grant] of this.shotGrants) {
+      if (grant.until <= now) this.shotGrants.delete(key);
     }
-    this.shotGrants.set(`${conv.kind}:${conv.id}`, now + SCREENSHOT_GRANT_MS);
+    this.shotGrants.set(`${conv.kind}:${conv.id}`, {
+      until: now + SCREENSHOT_GRANT_MS,
+      msgId,
+    });
   }
 
-  /** 这个会话现在能不能发图。 */
+  /**
+   * 这一轮能不能发图：必须是当前 QQ 轮次、必须是授权所在的会话，
+   * 而且授权要来自这一轮最后一条人话。桌宠轮次和只收到通知的轮次都不行。
+   */
   private mayScreenshot(conv: Conv): boolean {
-    const until = this.shotGrants.get(`${conv.kind}:${conv.id}`) ?? 0;
-    return until > Date.now();
+    if (!this.qqTurnActive()) return false;
+    if (this.turnConv?.kind !== conv.kind || this.turnConv.id !== conv.id) return false;
+    if (!this.turnMsgId) return false;
+    const grant = this.shotGrants.get(`${conv.kind}:${conv.id}`);
+    return !!grant && grant.until > Date.now() && grant.msgId === this.turnMsgId;
   }
 
   private historyTool(): ToolDef {

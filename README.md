@@ -5,7 +5,7 @@
 让 Cortico 的人格 Bot 进 QQ 群说话，同时把 QQ 账号与插件能力留在 AstrBot 手里。  
 *Join QQ conversations through an AstrBot bridge, keeping AstrBot's plugins while a Cortico persona drives the talking.*
 
-**当前版本：1.3.3**
+**当前版本：1.3.4**
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
