@@ -28,6 +28,7 @@ import {
   type ToolInfo,
 } from './driver.ts';
 import { convOfEvent, renderLatest, renderSearch } from './history.ts';
+import { EXTENSION_VERSION } from './version.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
 
@@ -286,6 +287,9 @@ export class AstrbotWorld implements World {
 
   webUi(): WorldWebUiDecl {
     return {
+      ...(EXTENSION_VERSION
+        ? { badges: [{ label: '版本', value: EXTENSION_VERSION, tone: 'plain' as const }] }
+        : {}),
       config: [ASTRBOT_CONFIG_GROUP],
       promptDocs: [
         {
@@ -857,6 +861,7 @@ export class AstrbotWorld implements World {
       handler: async () => {
         const cfg = this.opts.cfg;
         const lines: string[] = [];
+        if (EXTENSION_VERSION) lines.push(`版本：${EXTENSION_VERSION}`);
         lines.push(`桥地址：${cfg.wsUrl || '（未配置）'}`);
         lines.push(`连接：${this.connected ? '已连上' : '未连上'}`);
         lines.push('渠道：QQ（经 AstrBot 桥）');

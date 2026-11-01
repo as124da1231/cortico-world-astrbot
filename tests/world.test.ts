@@ -110,6 +110,20 @@ describe('装配', () => {
   });
 });
 
+describe('版本显示', () => {
+  it('WebUI 角标和状态工具都带上包版本', async () => {
+    const { world } = await mount({ mode: 'all' });
+    const badge = world.webUi().badges?.find((b) => b.label === '版本');
+    expect(badge?.value).toMatch(/^\d+\.\d+\.\d+/);
+
+    const status = world.tools().find((t) => t.name === 'astrbot_status');
+    if (!status) throw new Error('没有状态工具');
+    const out = await status.handler({}, toolCtx());
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toContain(`版本：${badge?.value}`);
+  });
+});
+
 describe('消息投递：B 全部消息', () => {
   it('未点名的群消息也会投递，且走默认合批', async () => {
     const { driver, host } = await mount({ mode: 'all' });
