@@ -20,12 +20,24 @@ export function convOfEvent(e: EventEnvelope): Conv | undefined {
   if (!raw) return undefined;
   const kind = raw.kind === 'private' ? 'private' : raw.kind === 'group' ? 'group' : null;
   if (!kind) return undefined;
-  return { kind, id: String(raw.id ?? ''), name: raw.name === undefined ? undefined : String(raw.name) };
+  const umo = typeof (e.meta as { umo?: unknown } | undefined)?.umo === 'string'
+    ? String((e.meta as { umo: string }).umo)
+    : typeof raw.umo === 'string'
+      ? raw.umo
+      : undefined;
+  return {
+    ...(umo ? { umo } : {}),
+    kind,
+    id: String(raw.id ?? ''),
+    name: raw.name === undefined ? undefined : String(raw.name),
+  };
 }
 
 function inConv(e: EventEnvelope, conv: Conv): boolean {
   const c = convOfEvent(e);
-  return !!c && c.kind === conv.kind && c.id === conv.id;
+  if (!c) return false;
+  if (c.umo && conv.umo) return c.umo === conv.umo;
+  return c.kind === conv.kind && c.id === conv.id;
 }
 
 const BASE: EventRangeQuery = { source: 'astrbot', origin: 'external' };

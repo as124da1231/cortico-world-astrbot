@@ -493,6 +493,7 @@ export class AstrbotWorld implements World {
     if (!host) return;
     if (!this.opts.cfg.enabled) return;
 
+    if (!msg.conv.umo && msg.umo) msg.conv.umo = msg.umo;
     this.rememberConv(msg.conv);
     const isPrivate = msg.conv.kind === 'private';
     const isNotice = msg.notice === true;
@@ -502,7 +503,7 @@ export class AstrbotWorld implements World {
       if (msg.canScreenshot) {
         this.grantScreenshot(msg.conv, msg.id);
       } else {
-        this.shotGrants.delete(`${msg.conv.kind}:${msg.conv.id}`);
+        this.shotGrants.delete(this.convKey(msg.conv));
       }
     }
 
@@ -529,7 +530,7 @@ export class AstrbotWorld implements World {
 
     const senderName = msg.sender?.name?.trim() || '某人';
     const senderId = (msg.sender?.id ?? '').trim();
-    const cachedName = this.convs.get(`${msg.conv.kind}:${msg.conv.id}`)?.name;
+    const cachedName = this.convs.get(this.convKey(msg.conv))?.name;
     const convName = msg.conv.name || cachedName || msg.conv.id;
     // 主人与管理员分开：owner 是「谁属于这个 bot」，role=admin 只是工具权限。
     const isOwner = msg.owner === true;
@@ -578,7 +579,13 @@ export class AstrbotWorld implements World {
           ...(blobs.length > 0 ? { blobs } : {}),
           meta: {
             channel: 'qq',
-            conv: { kind: msg.conv.kind, id: msg.conv.id, name: msg.conv.name },
+            ...(msg.conv.umo || msg.umo ? { umo: msg.conv.umo ?? msg.umo } : {}),
+            conv: {
+              ...(msg.conv.umo || msg.umo ? { umo: msg.conv.umo ?? msg.umo } : {}),
+              kind: msg.conv.kind,
+              id: msg.conv.id,
+              name: msg.conv.name,
+            },
             message_id: msg.id,
             ...(isNotice ? {} : { body }),
             mentioned: called,
@@ -606,7 +613,9 @@ export class AstrbotWorld implements World {
       const event = recent[i];
       if (!event || event.type !== 'astrbot.message') continue;
       const c = convOfEvent(event);
-      if (!c || c.kind !== conv.kind || c.id !== conv.id) continue;
+      if (!c) continue;
+      const same = c.umo && conv.umo ? c.umo === conv.umo : c.kind === conv.kind && c.id === conv.id;
+      if (!same) continue;
       if (String(event.meta?.message_id ?? '') !== ref) continue;
       const body = event.meta?.body;
       if (typeof body === 'string' && body) {
@@ -616,9 +625,14 @@ export class AstrbotWorld implements World {
     return '';
   }
 
+  /** 会话在 World 内部的唯一键：优先 UMO，旧帧退回 kind:id。 */
+  private convKey(conv: Conv): string {
+    return conv.umo?.trim() || `${conv.kind}:${conv.id}`;
+  }
+
   /** 记住见过的会话，上限 50 条，避免长期运行后无限增长。 */
   private rememberConv(conv: Conv): void {
-    const key = `${conv.kind}:${conv.id}`;
+    const key = this.convKey(conv);
     if (this.convs.has(key)) {
       // 重新插入以维持「最近」顺序
       this.convs.delete(key);
@@ -809,7 +823,7 @@ export class AstrbotWorld implements World {
     for (const [key, grant] of this.shotGrants) {
       if (grant.until <= now) this.shotGrants.delete(key);
     }
-    this.shotGrants.set(`${conv.kind}:${conv.id}`, {
+    this.shotGrants.set(this.convKey(conv), {
       until: now + SCREENSHOT_GRANT_MS,
       msgId,
     });
@@ -821,9 +835,14 @@ export class AstrbotWorld implements World {
    */
   private mayScreenshot(conv: Conv): boolean {
     if (!this.qqTurnActive()) return false;
-    if (this.turnConv?.kind !== conv.kind || this.turnConv.id !== conv.id) return false;
+    if (!this.turnConv) return false;
+    const same =
+      this.turnConv.umo && conv.umo
+        ? this.turnConv.umo === conv.umo
+        : this.turnConv.kind === conv.kind && this.turnConv.id === conv.id;
+    if (!same) return false;
     if (!this.turnMsgId) return false;
-    const grant = this.shotGrants.get(`${conv.kind}:${conv.id}`);
+    const grant = this.shotGrants.get(this.convKey(conv));
     return !!grant && grant.until > Date.now() && grant.msgId === this.turnMsgId;
   }
 

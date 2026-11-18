@@ -16,6 +16,11 @@ export type ConvKind = 'group' | 'private';
 
 /** 会话标识；id 用字符串，群号/QQ 号由桥给什么就存什么。 */
 export interface Conv {
+  /**
+   * AstrBot 的统一会话键 `platform:MessageType:session_id`。
+   * 新桥必带；旧帧缺失时退回 kind:id。
+   */
+  umo?: string;
   kind: ConvKind;
   id: string;
   /** 群名或对方昵称，仅用于展示。 */
@@ -26,6 +31,8 @@ export interface Conv {
 export interface BridgeMessage {
   /** 桥侧的消息唯一标识，用于引用回复与去重。 */
   id: string;
+  /** AstrBot 的统一会话键；新帧必带，旧帧缺失时由 conv 推导。 */
+  umo?: string;
   /** ISO 8601；缺失时由 World 补当前时间。 */
   ts?: string;
   /** 渠道。当前桥只有 QQ；字段与官方 QQ World 的 meta.channel 对齐。 */
@@ -334,6 +341,8 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       const frame: Record<string, unknown> = {
         t: 'send',
         rid,
+        // UMO 是主键；conv 只为旧桥/展示保留。
+        ...(conv.umo ? { umo: conv.umo } : {}),
         conv: { kind: conv.kind, id: conv.id },
         text,
       };
@@ -728,12 +737,16 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
   const text = typeof frame.text === 'string' ? frame.text : '';
   const senderRaw = frame.sender as Record<string, unknown> | undefined;
   const role = frame.role === 'admin' ? 'admin' : 'member';
+  const umoRaw = typeof frame.umo === 'string' ? frame.umo : convRaw.umo;
+  const umo = typeof umoRaw === 'string' && umoRaw.trim() !== '' ? umoRaw.trim() : undefined;
 
   return {
     id: frame.id === undefined ? '' : String(frame.id),
+    ...(umo ? { umo } : {}),
     ts: typeof frame.ts === 'string' ? frame.ts : undefined,
     channel: frame.channel === 'qq' ? 'qq' : undefined,
     conv: {
+      ...(umo ? { umo } : {}),
       kind,
       id,
       name: typeof convRaw.name === 'string' ? convRaw.name : undefined,

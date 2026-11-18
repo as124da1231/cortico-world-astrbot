@@ -357,6 +357,18 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
   });
 
+  it('回复默认带上 UMO，发送端以 UMO 为主键', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ umo: 'default:GroupMessage:123456' }));
+    await Promise.resolve();
+    settle(world, host);
+
+    const out = await handlerOf(world, 'astrbot_send_message')({ text: '收到' }, toolCtx());
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv.umo).toBe('default:GroupMessage:123456');
+  });
+
   it('一轮结束后，下一轮不再默认放行 QQ 出口', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage(groupMsg());
@@ -569,6 +581,14 @@ describe('历史检索', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(host.events[0]?.text).toContain('#abc123');
+  });
+
+  it('UMO 会写进事件 meta，供历史和路由使用', async () => {
+    const { driver, host } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ umo: 'default:GroupMessage:123456' }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(host.events[0]?.meta?.umo).toBe('default:GroupMessage:123456');
   });
 
   it('读最近消息，按时间升序', async () => {
@@ -848,6 +868,18 @@ describe('帧解析', () => {
     expect(parseMessage({ t: 'msg', text: 'x' })).toBeNull();
     expect(parseMessage({ t: 'msg', conv: { kind: 'group', id: '' } })).toBeNull();
     expect(parseMessage({ t: 'msg', conv: { kind: '别的', id: '1' } })).toBeNull();
+  });
+
+  it('帧里的 umo 会同时落到消息和会话上', () => {
+    const msg = parseMessage({
+      t: 'msg',
+      id: 'u1',
+      umo: 'default:GroupMessage:123456789',
+      conv: { kind: 'group', id: '123456789' },
+      text: '在吗',
+    });
+    expect(msg?.umo).toBe('default:GroupMessage:123456789');
+    expect(msg?.conv.umo).toBe('default:GroupMessage:123456789');
   });
 
   it('can.screenshot 只有明确为 true 才算允许', () => {
