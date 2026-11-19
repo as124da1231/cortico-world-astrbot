@@ -33,6 +33,8 @@ export interface BridgeMessage {
   id: string;
   /** AstrBot 的统一会话键；新帧必带，旧帧缺失时由 conv 推导。 */
   umo?: string;
+  /** 收帧 UMO 与 conv 不一致；以 UMO 为准，但上层记录警告。 */
+  convMismatch?: boolean;
   /** ISO 8601；缺失时由 World 补当前时间。 */
   ts?: string;
   /** 渠道。当前桥只有 QQ；字段与官方 QQ World 的 meta.channel 对齐。 */
@@ -781,6 +783,13 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
     parsed?.id ?? (convRaw?.id === undefined || convRaw?.id === null ? '' : String(convRaw.id));
   if (!id) return null;
 
+  const convMismatch = Boolean(
+    parsed &&
+      convRaw &&
+      (convRaw.kind !== parsed.kind ||
+        (convRaw.id !== undefined && convRaw.id !== null && String(convRaw.id) !== parsed.id)),
+  );
+
   const text = typeof frame.text === 'string' ? frame.text : '';
   const senderRaw = frame.sender as Record<string, unknown> | undefined;
   const role = frame.role === 'admin' ? 'admin' : 'member';
@@ -788,6 +797,7 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
   return {
     id: frame.id === undefined ? '' : String(frame.id),
     ...(umo ? { umo } : {}),
+    ...(convMismatch ? { convMismatch: true } : {}),
     ts: typeof frame.ts === 'string' ? frame.ts : undefined,
     channel: frame.channel === 'qq' ? 'qq' : undefined,
     conv: {

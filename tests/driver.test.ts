@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -112,6 +113,7 @@ describe('UMO 契约', () => {
       id: '123',
       umo: 'default:GroupMessage:123',
     });
+    expect(msg?.convMismatch).toBe(true);
   });
 
   it('发送时 UMO 与 conv 不一致直接拒绝', async () => {
@@ -121,5 +123,26 @@ describe('UMO 契约', () => {
       'x',
     );
     expect(result).toEqual({ ok: false, error: 'umo_conv_mismatch' });
+  });
+});
+
+
+describe('UMO 共享测试向量', () => {
+  it('两端使用同一份向量', () => {
+    const cases = JSON.parse(
+      readFileSync(new URL('../shared/umo-vectors.json', import.meta.url), 'utf8'),
+    ) as Array<{ in: string; ok: boolean; platform?: string; kind?: string; id?: string }>;
+    for (const item of cases) {
+      const parsed = parseUmo(item.in);
+      if (!item.ok) {
+        expect(parsed, item.in).toBeNull();
+      } else {
+        expect(parsed, item.in).toMatchObject({
+          platform: item.platform,
+          kind: item.kind,
+          id: item.id,
+        });
+      }
+    }
   });
 });

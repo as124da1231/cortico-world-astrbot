@@ -486,6 +486,12 @@ export class AstrbotWorld implements World {
     if (!this.opts.cfg.enabled) return;
 
     if (!msg.conv.umo && msg.umo) msg.conv.umo = msg.umo;
+    if (msg.convMismatch) {
+      this.host?.log.warn('AstrBot 帧 UMO 与 conv 不一致，已按 UMO 处理', {
+        umo: msg.umo,
+        conv: msg.conv,
+      });
+    }
     this.rememberConv(msg.conv);
     const isPrivate = msg.conv.kind === 'private';
     const isNotice = msg.notice === true;
