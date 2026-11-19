@@ -787,7 +787,12 @@ export class AstrbotWorld implements World {
       const fallbackKind = this.turnConv?.kind ?? this.lastConv?.kind ?? 'group';
       const kind =
         args.conv_kind === 'private' ? 'private' : args.conv_kind === 'group' ? 'group' : fallbackKind;
-      return { kind, id: idArg.trim() };
+      const id = idArg.trim();
+      // 桥已改成单通道：显式目标必须能补上 UMO，否则这一帧会被拒。
+      const known = [...this.convs.values()].find(
+        (c) => c.kind === kind && c.id === id && !!c.umo,
+      );
+      return known ? { ...known, kind, id } : { kind, id };
     }
     // 这一轮有 QQ 消息就以这一轮的会话为准；lastConv 只用于桌宠轮次查历史。
     if (this.qqTurnActive() && this.turnConv) return this.turnConv;

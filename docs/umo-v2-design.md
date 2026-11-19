@@ -1,6 +1,6 @@
 # UMO v2 设计：从“会话字符串”升级为桥的主承载对象
 
-状态：设计稿（待确认后实施）
+状态：§3 已实施并部署到测试服（2026-11-19）；§4–§6 未实施。
 范围：`cortico-world-astrbot` + `astrbot_plugin_cortico_bridge`
 
 ---
