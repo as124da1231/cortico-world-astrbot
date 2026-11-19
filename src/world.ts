@@ -14,8 +14,6 @@ import type { EventEnvelope, ToolDef, World, WorldHost, WorldWebUiDecl } from 'c
 import { nowIso } from 'cortico/core/util.ts';
 import {
   ASTRBOT_CONFIG_GROUP,
-  normalizeMode,
-  parseAliases,
   type AstrbotConfigSection,
 } from './config.ts';
 import {
@@ -204,7 +202,6 @@ export class AstrbotWorld implements World {
   /** 会话 -> 可发图授权；绑定到给权限的那条消息，轮次结束即失效。 */
   private readonly shotGrants = new Map<string, { until: number; msgId: string }>();
   /** 发送时间戳，用于每分钟上限。 */
-  private sendStamps: number[] = [];
   /** 桥那边启用的工具；只在环境提示词里列出来，不注册成原生工具。 */
   private toolList: ToolInfo[] = [];
   /** 是否已经收到过第一份清单（区分「连上」和「清单变了」）。 */
@@ -230,8 +227,6 @@ export class AstrbotWorld implements World {
    */
   envPromptVars(): Record<string, string> {
     const cfg = this.opts.cfg;
-    const mode = normalizeMode(cfg.mode);
-    const aliases = parseAliases(cfg.nameAliases);
 
     const connection = !cfg.enabled
       ? '这个 World 当前是关闭的。'
@@ -239,10 +234,7 @@ export class AstrbotWorld implements World {
         ? '桥已连上。'
         : '桥未连上：消息收不到，也发不出去。';
 
-    const scope =
-      mode === 'mention'
-        ? `只把点名（@ 或称呼）的消息送进来${aliases.length ? `；算作称呼的有：${aliases.join('、')}` : ''}。`
-        : '群里每条消息都会送进来，要不要开口由你自己决定。';
+    const scope = '群范围、仅被叫/全部消息、称呼都由 AstrBot 插件控制。';
 
     const convList =
       this.convs.size === 0
@@ -512,10 +504,7 @@ export class AstrbotWorld implements World {
     if (!body) return;
 
     // 私聊天然就是对着自己说的；通知类不是人说的话，永远不算点名。
-    const called = !isNotice && (isPrivate || msg.mentioned === true || this.textCallsMe(body));
-    const mode = normalizeMode(this.opts.cfg.mode);
-    // 群聊按「是否点名」过滤；私聊一律投递；通知类始终收下，留作上下文。
-    if (!isNotice && mode === 'mention' && !isPrivate && !called) return;
+    const called = !isNotice && (isPrivate || msg.mentioned === true);
 
     // 只有真的投递出去的人话才更新「默认会话」和「最近收到」。
     // 通知、以及被 mode 过滤掉的群消息不能改默认回复目标。
@@ -645,12 +634,6 @@ export class AstrbotWorld implements World {
     }
   }
 
-  /** 正文里出现配置的称呼就算叫到了自己。 */
-  private textCallsMe(text: string): boolean {
-    const aliases = parseAliases(this.opts.cfg.nameAliases);
-    return aliases.some((a) => text.includes(a));
-  }
-
   private async pushState(connected: boolean): Promise<void> {
     const host = this.host;
     if (!host) return;
@@ -668,17 +651,6 @@ export class AstrbotWorld implements World {
       .catch((err: unknown) => {
         host.log.warn('连接状态事件投递失败', { error: String(err) });
       });
-  }
-
-  /** 每分钟上限；返回 false 表示这次不该发。 */
-  private allowSend(now: number): boolean {
-    const limit = Number(this.opts.cfg.maxSendsPerMinute);
-    if (!Number.isFinite(limit) || limit <= 0) return true;
-    const cutoff = now - 60_000;
-    this.sendStamps = this.sendStamps.filter((t) => t > cutoff);
-    if (this.sendStamps.length >= limit) return false;
-    this.sendStamps.push(now);
-    return true;
   }
 
   private callToolDef(): ToolDef {
@@ -769,13 +741,6 @@ export class AstrbotWorld implements World {
             };
           }
           image = { mime: blob.mime, base64: Buffer.from(blob.bytes).toString('base64') };
-        }
-
-        if (!this.allowSend(Date.now())) {
-          return {
-            text: `已达到每分钟 ${this.opts.cfg.maxSendsPerMinute} 条的上限，本条没有发出。`,
-            failed: true,
-          };
         }
 
         const replyTo = typeof args.reply_to === 'string' && args.reply_to !== '' ? args.reply_to : undefined;
@@ -917,7 +882,7 @@ export class AstrbotWorld implements World {
         else if (selfName) identity = selfName;
         else if (selfId) identity = selfId;
         lines.push(`桥自报的身份：${identity}`);
-        lines.push(`消息范围：${normalizeMode(cfg.mode) === 'mention' ? '只回应被叫到时' : '全部消息'}`);
+        lines.push('消息范围：由 AstrBot 插件控制。');
         const owners = this.driver?.ownerIds ?? [];
         lines.push(`主人（AstrBot 管理员）：${owners.length ? owners.join('、') : '（未收到）'}`);
         lines.push(

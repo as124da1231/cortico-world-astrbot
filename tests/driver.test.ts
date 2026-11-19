@@ -1,7 +1,7 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AstrbotBridgeDriver } from '../src/driver.ts';
+import { AstrbotBridgeDriver, parseMessage, parseUmo } from '../src/driver.ts';
 
 /** 只接受 TCP、永远不回 HTTP Upgrade 的对端：模拟半开握手。 */
 function hangingServer(): Promise<{ server: Server; port: number; sockets: Socket[] }> {
@@ -79,5 +79,47 @@ describe('AstrbotBridgeDriver 握手', () => {
 
     await expect(noticed).resolves.toBe('still alive');
     await driver.stop();
+  });
+});
+
+describe('UMO 契约', () => {
+  it('解析 platform/type/session，session 里允许冒号', () => {
+    expect(parseUmo('default:GroupMessage:123:456')).toMatchObject({
+      platform: 'default',
+      type: 'GroupMessage',
+      kind: 'group',
+      id: '123:456',
+    });
+  });
+
+  it('拒绝非法 UMO', () => {
+    expect(parseUmo('default:GroupMessage')).toBeNull();
+    expect(parseUmo('default:OtherMessage:1')).toBeNull();
+    expect(parseUmo(':GroupMessage:1')).toBeNull();
+    expect(parseUmo('')).toBeNull();
+  });
+
+  it('收帧以 UMO 为准，并派生 conv', () => {
+    const msg = parseMessage({
+      t: 'msg',
+      id: '1',
+      umo: 'default:GroupMessage:123',
+      conv: { kind: 'private', id: '999' },
+      text: 'x',
+    });
+    expect(msg?.conv).toMatchObject({
+      kind: 'group',
+      id: '123',
+      umo: 'default:GroupMessage:123',
+    });
+  });
+
+  it('发送时 UMO 与 conv 不一致直接拒绝', async () => {
+    const driver = new AstrbotBridgeDriver({ wsUrl: 'ws://127.0.0.1:1' });
+    const result = await driver.send(
+      { kind: 'group', id: '123', umo: 'default:GroupMessage:999' },
+      'x',
+    );
+    expect(result).toEqual({ ok: false, error: 'umo_conv_mismatch' });
   });
 });

@@ -149,33 +149,34 @@ describe('消息投递：B 全部消息', () => {
   });
 });
 
-describe('消息投递：A 只回应被叫到时', () => {
-  it('没被叫到就不投递', async () => {
+describe('消息投递：World 不再按称呼过滤', () => {
+  it('没被叫到也投递，由插件决定是否推送', async () => {
     const { driver, host } = await mount({ mode: 'mention' });
     driver.emitMessage(groupMsg());
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(host.events).toHaveLength(0);
+    expect(host.events).toHaveLength(1);
   });
 
-  it('被 at 时投递', async () => {
+  it('被 at 时投递并标记 @你', async () => {
     const { driver, host } = await mount({ mode: 'mention' });
     driver.emitMessage(groupMsg({ mentioned: true }));
     await Promise.resolve();
     await Promise.resolve();
 
     expect(host.events).toHaveLength(1);
+    expect(host.events[0]?.text).toContain('@你');
   });
 
-  it('正文里叫到称呼也算叫到自己', async () => {
+  it('World 不解析称呼，只使用插件传来的 mentioned', async () => {
     const { driver, host } = await mount({ mode: 'mention', nameAliases: 'Coo,库' });
     driver.emitMessage(groupMsg({ text: '库你在干嘛' }));
     await Promise.resolve();
     await Promise.resolve();
 
     expect(host.events).toHaveLength(1);
-    expect(host.events[0]?.text).toContain('@你');
+    expect(host.events[0]?.text).not.toContain('@你');
   });
 });
 
@@ -404,15 +405,15 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('不要直接重发');
   });
 
-  it('超过每分钟上限后拒绝发送', async () => {
+  it('World 不再本地限流，发送频率交给插件', async () => {
     const { driver, world } = await mount({ mode: 'all', maxSendsPerMinute: 1 });
     const send = handlerOf(world, 'astrbot_send_message');
     const first = await send({ text: 'a', conv_id: '1' }, toolCtx());
     const second = await send({ text: 'b', conv_id: '1' }, toolCtx());
 
-    expect(driver.sent).toHaveLength(1);
-    expect(typeof second === 'string' ? second : second.text).toContain('上限');
+    expect(driver.sent).toHaveLength(2);
     expect(typeof first === 'string' ? true : first.failed ?? false).toBe(false);
+    expect(typeof second === 'string' ? true : second.failed ?? false).toBe(false);
   });
 
   it('未连接时不发送', async () => {
@@ -787,8 +788,7 @@ describe('环境提示词变量', () => {
   it('未连接与已连接给出不同的话', async () => {
     const { world } = await mount({ mode: 'mention', nameAliases: 'Coo' });
     const vars = world.envPromptVars();
-    expect(vars['astrbot.scope']).toContain('点名');
-    expect(vars['astrbot.scope']).toContain('Coo');
+    expect(vars['astrbot.scope']).toContain('AstrBot 插件控制');
     expect(vars['astrbot.connection']).toContain('已连上');
   });
 
@@ -970,7 +970,7 @@ describe('工具桥接', () => {
     expect(text).toContain('人话消息');
   });
 
-  it('点名过滤掉的群消息不会变成工具身份', async () => {
+  it('World 不再过滤群消息，最后一条成为工具身份', async () => {
     const { driver, host, world } = await mount({ mode: 'mention' });
     driver.emitMessage(groupMsg({ id: 'm1', mentioned: true }));
     await Promise.resolve();
@@ -986,7 +986,7 @@ describe('工具桥接', () => {
     settle(world, host);
 
     await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
-    expect(driver.toolCalls[0]?.turn).toBe('m1');
+    expect(driver.toolCalls[0]?.turn).toBe('m2');
   });
 
   it('通知不会把默认回复会话带到别的群', async () => {

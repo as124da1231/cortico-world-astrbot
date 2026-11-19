@@ -100,13 +100,12 @@ corepack pnpm add cortico-world-astrbot
 | `enabled` | 挂载开关，默认关闭 |
 | `wsUrl` | 桥的地址，如 `ws://<服务器IP>:17999`。空串表示还没配置 |
 | `token` | 与桥一致的校验 token，留空表示不校验 |
-| `mode` | `mention`（默认）只在被 @ 或叫到称呼时送进来；`all` 每条群消息都送进来，要不要说话由 bot 自己决定 |
-| `nameAliases` | 除 @ 之外算作「叫我」的称呼，逗号分隔，例如 `Coo,库` |
 | `reconnectBaseMs` / `reconnectMaxMs` | 重连退避的起点与封顶 |
-| `maxSendsPerMinute` | 每分钟发送上限，防止刷屏；0 表示不限 |
 | `channelHint` | 在需要回复的 QQ 消息（@、带图、私聊）后加一行「用 astrbot_send_message 回」的提醒，默认开 |
 
-`wsUrl`、`token` 是建立连接时用的，改完要重启本 World 才生效；`mode`、`nameAliases`、`maxSendsPerMinute`、`channelHint` 热改即生效。
+群范围、`mention` / `all` 消息范围、称呼和发送频率都由 AstrBot 插件统一控制，World 不再重复配置。
+
+`wsUrl`、`token` 是建立连接时用的，改完要重启本 World 才生效；`channelHint` 热改即生效。
 
 ## 桥的协议
 

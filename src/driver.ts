@@ -317,6 +317,13 @@ export class AstrbotBridgeDriver implements BridgeDriver {
    * 由 World 把它写成失败回执，不抛错。
    */
   send(conv: Conv, text: string, replyTo?: string, image?: OutgoingImage, voice?: boolean): Promise<SendResult> {
+    if (conv.umo) {
+      const parsed = parseUmo(conv.umo);
+      if (!parsed) return Promise.resolve({ ok: false, error: 'invalid_umo' });
+      if (parsed.kind !== conv.kind || parsed.id !== conv.id) {
+        return Promise.resolve({ ok: false, error: 'umo_conv_mismatch' });
+      }
+    }
     return new Promise((resolve) => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -726,19 +733,57 @@ export function parseFrame(raw: string): Record<string, unknown> | null {
 }
 
 /** 把一帧 `msg` 收敛成 BridgeMessage；形状不对时返回 null。 */
+export interface ParsedUmo {
+  raw: string;
+  platform: string;
+  type: 'GroupMessage' | 'FriendMessage';
+  kind: 'group' | 'private';
+  id: string;
+}
+
+/** 解析 UMO；只切前两个冒号，session 里允许有冒号。 */
+export function parseUmo(raw: unknown): ParsedUmo | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value || value.length > 512) return null;
+  const first = value.indexOf(':');
+  if (first <= 0) return null;
+  const second = value.indexOf(':', first + 1);
+  if (second <= first + 1 || second >= value.length - 1) return null;
+  const platform = value.slice(0, first);
+  const type = value.slice(first + 1, second);
+  if (type !== 'GroupMessage' && type !== 'FriendMessage') return null;
+  const id = value.slice(second + 1);
+  if (!platform || !id) return null;
+  return {
+    raw: value,
+    platform,
+    type,
+    kind: type === 'GroupMessage' ? 'group' : 'private',
+    id,
+  };
+}
+
+/** 把一帧 `msg` 解析成 BridgeMessage；形状不对时返回 null。 */
 export function parseMessage(frame: Record<string, unknown>): BridgeMessage | null {
   const convRaw = frame.conv as Record<string, unknown> | undefined;
-  if (!convRaw) return null;
-  const kind = convRaw.kind === 'private' ? 'private' : convRaw.kind === 'group' ? 'group' : null;
+  const umoRaw = typeof frame.umo === 'string' ? frame.umo : convRaw?.umo;
+  const umo = typeof umoRaw === 'string' && umoRaw.trim() !== '' ? umoRaw.trim() : undefined;
+  const parsed = umo ? parseUmo(umo) : null;
+  if (umo && !parsed) return null;
+
+  const convKindRaw = convRaw?.kind;
+  const kind =
+    parsed?.kind ??
+    (convKindRaw === 'private' ? 'private' : convKindRaw === 'group' ? 'group' : null);
   if (!kind) return null;
-  const id = convRaw.id === undefined || convRaw.id === null ? '' : String(convRaw.id);
+  const id =
+    parsed?.id ?? (convRaw?.id === undefined || convRaw?.id === null ? '' : String(convRaw.id));
   if (!id) return null;
 
   const text = typeof frame.text === 'string' ? frame.text : '';
   const senderRaw = frame.sender as Record<string, unknown> | undefined;
   const role = frame.role === 'admin' ? 'admin' : 'member';
-  const umoRaw = typeof frame.umo === 'string' ? frame.umo : convRaw.umo;
-  const umo = typeof umoRaw === 'string' && umoRaw.trim() !== '' ? umoRaw.trim() : undefined;
 
   return {
     id: frame.id === undefined ? '' : String(frame.id),
@@ -749,7 +794,7 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
       ...(umo ? { umo } : {}),
       kind,
       id,
-      name: typeof convRaw.name === 'string' ? convRaw.name : undefined,
+      name: typeof convRaw?.name === 'string' ? convRaw.name : undefined,
     },
     sender: senderRaw
       ? {
