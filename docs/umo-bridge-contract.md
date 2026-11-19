@@ -340,4 +340,4 @@ type Conv = {
 1. **群范围默认值**：`all`，升级不突然断群聊。
 2. **配置键采用** `group_scope` / `group_allow` / `group_mode`；旧键只做迁移。
 3. **World 移除/隐藏** `mode` / `nameAliases` / `maxSendsPerMinute`，由插件单一拥有。
-4. **发送目标只允许已知 UMO**；未知 UMO 一律拒绝。
+4. **发送目标只允许已知 UMO**；注册表在插件，World 只做格式/一致性校验，未知 UMO 由插件拒绝。
