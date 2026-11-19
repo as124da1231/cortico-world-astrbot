@@ -10,7 +10,7 @@
  * - 连接只发生在 start(host)；连不上只写日志，绝不抛错。
  */
 import { fileURLToPath } from 'node:url';
-import type { EventEnvelope, ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
+import type { EventEnvelope, RunPhase, ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import {
   ASTRBOT_CONFIG_GROUP,
@@ -464,10 +464,18 @@ export class AstrbotWorld implements World {
     this.turnMsgId = '';
   }
 
+  /** 运行阶段回到 idle 时也清掉 QQ 轮次，避免桌宠/控制台复用上一轮 QQ 工具。 */
+  onRunPhase(phase: RunPhase): void {
+    if (phase.state !== 'idle') return;
+    this.turnChannel = undefined;
+    this.turnConv = undefined;
+    this.turnMsgId = '';
+  }
+
   /** 这一轮是不是 QQ 轮次；onTurnEnded 万一没来，30 分钟后自动失效。 */
   private qqTurnActive(): boolean {
     if (this.turnChannel !== 'qq') return false;
-    return Date.now() - this.turnChannelAt < 30 * 60_000;
+    return Date.now() - this.turnChannelAt < 2 * 60_000;
   }
 
   /** 当前端点的模型能不能直接读图；读不了就让桥只发文字描述。 */
@@ -704,16 +712,15 @@ export class AstrbotWorld implements World {
         if (voice && !text) return { text: '语音需要正文，未发送。', failed: true };
         if (voice && handle) return { text: '语音和图片不能是同一条消息，未发送。', failed: true };
 
-        // 渠道硬校验：这一轮没有投递过 QQ 事件时，不许用 QQ 出口兜底。
-        // 显式给 conv_id 视为「我确实要发到别处」，仍然放行。
-        const explicitConv = typeof args.conv_id === 'string' && args.conv_id.trim() !== '';
+        // 渠道硬校验：只有当前这一轮确实是 QQ 事件时，才允许用 QQ 出口。
+        // 显式 conv_id 也不能绕过 World 边界；桌宠/控制台请用 pet_say 或直接回复。
         const qqTurn = this.qqTurnActive();
-        if (!qqTurn && !explicitConv) {
-          this.host?.log.warn('QQ 出口被拒：这一轮没有投递过 QQ 事件');
+        if (!qqTurn) {
+          this.host?.log.warn('QQ 出口被拒：这一轮不是 QQ 事件');
           return {
             text:
-              '这一轮不是 QQ 消息（最后一条事件来自桌宠），不能用 QQ 出口。' +
-              '要发到 QQ 请显式给 conv_id 和 conv_kind；要回桌宠请用 pet_say。',
+              '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
+              '桌宠/控制台聊天请用 pet_say 或直接回复。',
             failed: true,
           };
         }

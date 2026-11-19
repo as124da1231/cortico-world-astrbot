@@ -295,8 +295,11 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('已发到');
   });
 
-  it('可以显式指定会话', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
+  it('QQ 轮次里可以显式指定会话', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg());
+    await Promise.resolve();
+    settle(world, host);
     await handlerOf(world, 'astrbot_send_message')(
       { text: '你好', conv_kind: 'private', conv_id: '999' },
       toolCtx(),
@@ -347,15 +350,16 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('pet_say');
   });
 
-  it('桌宠轮次显式给 conv_id 仍可发到 QQ', async () => {
+  it('桌宠轮次显式给 conv_id 也不能发到 QQ', async () => {
     const { driver, world } = await mount({ mode: 'all' });
     world.onTurnEnded();
     const out = await handlerOf(world, 'astrbot_send_message')(
       { text: '帮你转告', conv_kind: 'group', conv_id: '123456' },
       toolCtx(),
     );
-    expect(driver.sent).toHaveLength(1);
-    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? false : out.failed).toBe(true);
+    expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
   });
 
   it('回复默认带上 UMO，发送端以 UMO 为主键', async () => {
@@ -383,7 +387,10 @@ describe('发消息工具', () => {
   });
 
   it('桥拒绝时回执带原因且标失败', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg());
+    await Promise.resolve();
+    settle(world, host);
     driver.sendResult = { ok: false, error: '桥拒绝了' };
     const out = await handlerOf(world, 'astrbot_send_message')(
       { text: '你好', conv_id: '1' },
@@ -394,7 +401,10 @@ describe('发消息工具', () => {
   });
 
   it('结果未知时明确提醒可能已发出，不要直接重试', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg());
+    await Promise.resolve();
+    settle(world, host);
     driver.sendResult = { ok: false, uncertain: true, error: '桥没有确认' };
     const out = await handlerOf(world, 'astrbot_send_message')(
       { text: '你好', conv_id: '1' },
@@ -406,7 +416,10 @@ describe('发消息工具', () => {
   });
 
   it('World 不再本地限流，发送频率交给插件', async () => {
-    const { driver, world } = await mount({ mode: 'all', maxSendsPerMinute: 1 });
+    const { driver, host, world } = await mount({ mode: 'all', maxSendsPerMinute: 1 });
+    driver.emitMessage(groupMsg());
+    await Promise.resolve();
+    settle(world, host);
     const send = handlerOf(world, 'astrbot_send_message');
     const first = await send({ text: 'a', conv_id: '1' }, toolCtx());
     const second = await send({ text: 'b', conv_id: '1' }, toolCtx());
@@ -417,7 +430,10 @@ describe('发消息工具', () => {
   });
 
   it('未连接时不发送', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg());
+    await Promise.resolve();
+    settle(world, host);
     driver.connected = false;
     const out = await handlerOf(world, 'astrbot_send_message')(
       { text: 'x', conv_id: '1' },
@@ -477,6 +493,7 @@ describe('发图', () => {
     // 桥没有给 canScreenshot
     driver.emitMessage(groupMsg());
     await Promise.resolve();
+    settle(world, host);
 
     const out = await handlerOf(world, 'astrbot_send_message')(
       { image: 'log:abc123.jpg', conv_id: '123456' },
