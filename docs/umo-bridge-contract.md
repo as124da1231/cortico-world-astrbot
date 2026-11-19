@@ -101,6 +101,15 @@ parseUmo("default:GroupMessage:123456789")
 
 ---
 
+## 3.1 平台边界
+
+AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、WebUI 的 `webchat`、Cortico 的 `console`）。桥只拥有 `bridge_platforms` 里列出的平台：
+
+- 只处理 UMO 第一段在列表中的事件。
+- 列表外的平台（`webchat`、`console`、`default1` 等）**不推送、不 stop**，完全交回 AstrBot / 对应 World。
+- 默认 `["default"]`，避免两个 QQ 账号同时接同一群造成重复。
+- 这样桥只接管自己的 QQ 会话，不会杀死正常控制台对话。
+
 ## 4. AstrBot 插件配置
 
 ### 4.1 新配置
