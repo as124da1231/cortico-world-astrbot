@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import { AstrbotBridgeDriver, parseMessage, parseUmo } from '../src/driver.ts';
+import { AstrbotBridgeDriver, AUTH_REJECT_MIN_BACKOFF_MS, parseMessage, parseUmo } from '../src/driver.ts';
 
 /** 只接受 TCP、永远不回 HTTP Upgrade 的对端：模拟半开握手。 */
 function hangingServer(): Promise<{ server: Server; port: number; sockets: Socket[] }> {
@@ -126,6 +126,229 @@ describe('UMO 契约', () => {
   });
 });
 
+
+describe('重连退避', () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  afterEach(async () => {
+    await cleanup?.();
+    cleanup = undefined;
+  });
+
+  interface Bridge {
+    port: number;
+    count: () => number;
+    close: () => Promise<void>;
+  }
+
+  async function openBridge(handler: (client: import('ws').WebSocket) => void): Promise<Bridge> {
+    const wss = new WebSocketServer({ port: 0 });
+    let count = 0;
+    wss.on('connection', (client) => {
+      count += 1;
+      handler(client);
+    });
+    await new Promise<void>((resolve, reject) => {
+      wss.once('listening', () => resolve());
+      wss.once('error', reject);
+    });
+    const port = (wss.address() as { port: number }).port;
+    return {
+      port,
+      count: () => count,
+      close: async () => {
+        for (const client of wss.clients) {
+          try {
+            client.terminate();
+          } catch {
+            // 已经断了
+          }
+        }
+        await new Promise<void>((resolve) => wss.close(() => resolve()));
+      },
+    };
+  }
+
+  async function until(ok: () => boolean, ms = 2_000): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      if (ok()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('等待条件超时');
+  }
+
+  /** 退避是内部状态；用行为验证太啰嗦，这里直接读来断言“有没有被重置”。 */
+  const backoff = (driver: AstrbotBridgeDriver): number =>
+    (driver as unknown as { backoffMs: number }).backoffMs;
+
+  const makeDriver = (port: number): AstrbotBridgeDriver =>
+    new AstrbotBridgeDriver({
+      wsUrl: `ws://127.0.0.1:${port}`,
+      reconnectBaseMs: 20,
+      reconnectMaxMs: 1_000,
+      heartbeatMs: 0,
+    });
+
+  it('只有 ready 重置退避；open 后未 ready 时继续翻倍', async () => {
+    const bridge = await openBridge((client) => client.close(1000, 'bye'));
+    const driver = makeDriver(bridge.port);
+    cleanup = async () => {
+      await driver.stop();
+      await bridge.close();
+    };
+
+    await driver.start();
+    await until(() => backoff(driver) >= 80);
+    // 老实现每次 open 都写回起点 20ms；那样这里永远到不了 80ms。
+    expect(backoff(driver)).toBeGreaterThanOrEqual(80);
+    expect(bridge.count()).toBeGreaterThan(1);
+  });
+
+  it('收到 ready 后把退避收回初始值', async () => {
+    let connections = 0;
+    const bridge = await openBridge((client) => {
+      connections += 1;
+      if (connections === 1) {
+        client.terminate();
+        return;
+      }
+      // 第二条连接先不 ready：这段时间退避必须还是上一轮的翻倍值。
+      setTimeout(() => {
+        try {
+          client.send(JSON.stringify({ t: 'ready', self: { name: '桥' }, admins: [] }));
+        } catch {
+          // 连接已关
+        }
+      }, 150);
+    });
+    const driver = makeDriver(bridge.port);
+    cleanup = async () => {
+      await driver.stop();
+      await bridge.close();
+    };
+
+    await driver.start();
+    await until(() => connections >= 2);
+    // 第二次 open 之后、ready 之前：退避仍是第一轮 close 后的 40ms，未被 open 重置。
+    expect(backoff(driver)).toBeGreaterThanOrEqual(40);
+
+    await until(() => driver.self?.name === '桥');
+    expect(backoff(driver)).toBe(20);
+  });
+
+  it('token 被拒（4003）后按 10s 起步，不再 1s 一次重连', async () => {
+    const bridge = await openBridge((client) => client.close(4003, 'bad token'));
+    const driver = new AstrbotBridgeDriver({
+      wsUrl: `ws://127.0.0.1:${bridge.port}`,
+      reconnectBaseMs: 20,
+      reconnectMaxMs: 30_000,
+      heartbeatMs: 0,
+    });
+    cleanup = async () => {
+      await driver.stop();
+      await bridge.close();
+    };
+
+    await driver.start();
+    await until(() => backoff(driver) >= AUTH_REJECT_MIN_BACKOFF_MS);
+    const attempts = bridge.count();
+    // 300ms 内不能出现第二次尝试：老实现会在 20ms 后就回来。
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(bridge.count()).toBe(attempts);
+  });
+});
+
+describe('发送失败回执', () => {
+  it('失败时透传桥的 note（T-004）', async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
+    const port = (wss.address() as { port: number }).port;
+    wss.on('connection', (client) => {
+      client.on('message', (raw) => {
+        const frame = JSON.parse(String(raw)) as Record<string, unknown>;
+        if (frame.t !== 'send') return;
+        client.send(
+          JSON.stringify({
+            t: 'ack',
+            rid: frame.rid,
+            ok: false,
+            error: 'send_timeout',
+            note: '平台超时，可能已发出',
+            uncertain: true,
+          }),
+        );
+      });
+    });
+
+    const driver = new AstrbotBridgeDriver({ wsUrl: `ws://127.0.0.1:${port}`, heartbeatMs: 0 });
+    try {
+      await driver.start();
+      const result = await driver.send(
+        { kind: 'group', id: '123', umo: 'default:GroupMessage:123' },
+        'x',
+      );
+      expect(result).toEqual({
+        ok: false,
+        error: 'send_timeout',
+        note: '平台超时，可能已发出',
+        uncertain: true,
+      });
+    } finally {
+      await driver.stop();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+  });
+});
+
+describe('非法 UMO 回退（G-004）', () => {
+  it('带着 conv 的非法 UMO 按 conv 记账，通知不丢', () => {
+    const msg = parseMessage({
+      t: 'msg',
+      id: 'm1',
+      kind: 'notice',
+      umo: 'not-a-umo',
+      conv: { kind: 'group', id: '123' },
+      text: '某人撤回了一条消息',
+    });
+    expect(msg).not.toBeNull();
+    expect(msg?.umo).toBeUndefined();
+    expect(msg?.umoInvalid).toBe(true);
+    expect(msg?.notice).toBe(true);
+    expect(msg?.conv).toMatchObject({ kind: 'group', id: '123' });
+    expect(msg?.conv.umo).toBeUndefined();
+  });
+
+  it('非法 UMO 的帧仍交给消息回调', async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
+    const port = (wss.address() as { port: number }).port;
+    wss.on('connection', (client) => {
+      client.send(
+        JSON.stringify({
+          t: 'msg',
+          id: 'm2',
+          kind: 'notice',
+          umo: 'bad',
+          conv: { kind: 'private', id: '9' },
+          text: '入群',
+        }),
+      );
+    });
+
+    const driver = new AstrbotBridgeDriver({ wsUrl: `ws://127.0.0.1:${port}`, heartbeatMs: 0 });
+    try {
+      const received = new Promise<string>((resolve) => {
+        driver.onMessage((m) => resolve(`${m.conv.kind}:${m.conv.id}`));
+      });
+      await driver.start();
+      await expect(received).resolves.toBe('private:9');
+    } finally {
+      await driver.stop();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+  });
+});
 
 describe('UMO 共享测试向量', () => {
   it('两端使用同一份向量', () => {

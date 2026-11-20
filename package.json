@@ -56,7 +56,8 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "build:web": "node scripts/build-web.mjs"
+    "build:web": "node scripts/build-web.mjs",
+    "prepack": "node scripts/build-web.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -1,4 +1,4 @@
-import type { ConfigGroup } from 'cortico/core/types.ts';
+import type { ConfigGroup, ConfigProperty } from 'cortico/core/types.ts';
 
 /**
  * `worlds.astrbot` 配置。
@@ -138,7 +138,11 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description:
           'Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；必须是 AstrBot 的 admins_id 之一。留空表示 Coo 轮次不调用工具。',
-      },
+        // JSON Schema 约束：纯数字、20 位以内。Cortico 配置页当前不消费这两项，
+        // 面板保存前另做同样校验（见 webui/connection.ts）。
+        pattern: '^\\d*$',
+        maxLength: 20,
+      } as ConfigProperty,
     },
   },
 };

@@ -132,6 +132,33 @@
   line-height: 1.6;
 }
 
+.astrbot-gnote {
+  margin-bottom: 14px;
+  color: var(--ink-dim);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.astrbot-tokenrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.astrbot-tokenrow input.field {
+  flex: 1;
+  min-width: 0;
+}
+
+.astrbot-tokenrow .btn { flex: none; }
+
+.astrbot-loadfail {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
 .astrbot-submit .rowbar { flex: none; }
 .astrbot-submit .msgline { font-size: 11.5px; }
 

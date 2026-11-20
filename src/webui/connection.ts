@@ -59,28 +59,20 @@ function settingsCard(
     desc: '只改 Coo 这一端。AstrBot 的群聊、私聊、工具和语音仍在插件页。',
   });
 
-  let enabled = st.enabled;
   let wsUrl = st.wsUrl;
   let token = '';
+  let clearToken = false;
   let ownerId = st.ownerId;
   let includeTime = st.includeTime;
   let channelHint = st.channelHint;
   let base = String(st.reconnectBaseMs);
   let max = String(st.reconnectMaxMs);
+  let saving = false;
 
   const mark = (): void => {
     setDirty(true);
     bar.dirty();
   };
-
-  const enableBox = ui.checkbox('启用这个 World', {
-    checked: enabled,
-    title: '关掉后 Coo 不再连接 AstrBot；桥和 AstrBot 那边不受影响',
-    onChange: (checked) => {
-      enabled = checked;
-      mark();
-    },
-  });
 
   const urlInput = ui.input({
     value: wsUrl,
@@ -149,46 +141,110 @@ function settingsCard(
     },
   });
 
-  const bar = saveBar(ctx, '保存连接设置', async () => {
-    const url = wsUrl.trim();
-    if (url && !/^wss?:\/\/.+/i.test(url)) {
-      throw new Error('桥地址要以 ws:// 或 wss:// 开头');
-    }
-    const owner = ownerId.trim();
-    if (owner && !/^\d+$/.test(owner)) {
-      throw new Error('主人 QQ 只填数字');
-    }
-    const baseMs = Number.parseInt(base, 10);
-    const maxMs = Number.parseInt(max, 10);
-    if (!Number.isFinite(baseMs) || !Number.isFinite(maxMs)) {
-      throw new Error('重连间隔要填整数毫秒');
-    }
-    if (baseMs > maxMs) {
-      throw new Error('重连初始间隔不能大于上限');
-    }
-    const values: Record<string, string | number | boolean> = {
-      'worlds.astrbot.enabled': enabled,
-      'worlds.astrbot.wsUrl': url,
-      'worlds.astrbot.includeTime': includeTime,
-      'worlds.astrbot.channelHint': channelHint,
-      'worlds.astrbot.ownerId': owner,
-      'worlds.astrbot.reconnectBaseMs': Math.max(200, Math.min(baseMs, 60_000)),
-      'worlds.astrbot.reconnectMaxMs': Math.max(1000, Math.min(maxMs, 600_000)),
-    };
-    if (token.trim()) values['worlds.astrbot.token'] = token.trim();
-    await ctx.setConfig(GROUP, values);
-    setDirty(false);
-    bar.reset();
-    reload();
-    return '连接设置已保存';
+  // token 语义是「留空＝保持」，所以清空输入框并不等于删掉已存值；
+  // 想真正删掉必须显式点清除（X-005）。
+  const tokenHint = ui.h('div', 'astrbot-note');
+  const clearBtn = ui.button('清除已存 token', {
+    variant: 'plain',
+    size: 'sm',
+    onClick: () => {
+      if (clearBtn.disabled) return;
+      clearToken = !clearToken;
+      if (clearToken) tokenInput.value = '';
+      syncToken();
+      mark();
+    },
   });
+  const tokenRow = ui.h('div', 'astrbot-tokenrow');
+  tokenRow.append(tokenInput, clearBtn);
+
+  const syncToken = (): void => {
+    tokenInput.disabled = saving || clearToken;
+    clearBtn.disabled = saving || !(st.tokenSet || clearToken);
+    clearBtn.textContent = clearToken ? '取消清除' : '清除已存 token';
+    tokenHint.textContent = clearToken
+      ? '保存后会清空桥 token；AstrBot 插件那边也要清空或改成不校验，否则两边对不上。'
+      : st.tokenSet
+        ? '已存 token。留空＝保持不变；要删掉请点「清除已存 token」。'
+        : '两边都没设 token 时不校验；跨机部署请设置同一个 token。';
+  };
+
+  const formControls: Array<HTMLInputElement | HTMLButtonElement> = [
+    urlInput,
+    tokenInput,
+    ownerInput,
+    baseInput,
+    maxInput,
+    timeBox.input,
+    hintBox.input,
+    clearBtn,
+  ];
+  const setSaving = (busy: boolean): void => {
+    saving = busy;
+    for (const el of formControls) {
+      if (el === clearBtn) continue;
+      el.disabled = busy;
+    }
+    syncToken();
+  };
+  syncToken();
+
+  const bar = saveBar(
+    ctx,
+    '保存连接设置',
+    async () => {
+      const url = wsUrl.trim();
+      if (url && !/^wss?:\/\/.+/i.test(url)) {
+        throw new Error('桥地址要以 ws:// 或 wss:// 开头');
+      }
+      const owner = ownerId.trim();
+      if (owner && !/^\d*$/.test(owner)) {
+        throw new Error('主人 QQ 只能填数字');
+      }
+      if (owner.length > 20) {
+        throw new Error('主人 QQ 最长 20 位');
+      }
+      const baseMs = Number.parseInt(base, 10);
+      const maxMs = Number.parseInt(max, 10);
+      if (!Number.isFinite(baseMs) || !Number.isFinite(maxMs)) {
+        throw new Error('重连间隔要填整数毫秒');
+      }
+      if (baseMs > maxMs) {
+        throw new Error('重连初始间隔不能大于上限');
+      }
+      const values: Record<string, string | number | boolean> = {
+        'worlds.astrbot.wsUrl': url,
+        'worlds.astrbot.includeTime': includeTime,
+        'worlds.astrbot.channelHint': channelHint,
+        'worlds.astrbot.ownerId': owner,
+        'worlds.astrbot.reconnectBaseMs': Math.max(200, Math.min(baseMs, 60_000)),
+        'worlds.astrbot.reconnectMaxMs': Math.max(1000, Math.min(maxMs, 600_000)),
+      };
+      if (clearToken) values['worlds.astrbot.token'] = '';
+      else if (token.trim()) values['worlds.astrbot.token'] = token.trim();
+      await ctx.setConfig(GROUP, values);
+      clearToken = false;
+      token = '';
+      setDirty(false);
+      bar.reset();
+      reload();
+      return '连接设置已保存';
+    },
+    { onSaving: setSaving },
+  );
 
   const bridge = ui.h('div', 'astrbot-group');
   bridge.append(
     ui.h('div', 'astrbot-glabel', '接入'),
-    enableBox.el,
+    // 启停是 World 的生命周期，不在 worlds.astrbot 的 schema 里；面板不再假装能改。
+    ui.h(
+      'div',
+      'astrbot-gnote',
+      '启停不在这个面板：到 Coo 的 World 页打开或关闭「AstrBot · QQ」。这里保存不会改变启停状态。',
+    ),
     ui.field('桥地址', urlInput),
-    ui.field('桥 token', tokenInput),
+    ui.field('桥 token', tokenRow),
+    tokenHint,
   );
 
   const tools = ui.h('div', 'astrbot-group');

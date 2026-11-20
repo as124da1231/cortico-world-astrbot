@@ -33,6 +33,11 @@ export interface BridgeMessage {
   id: string;
   /** AstrBot 的统一会话键；新帧必带，旧帧缺失时由 conv 推导。 */
   umo?: string;
+  /**
+   * 帧里带了 UMO 但解析失败；这条消息已按 `conv` 处理，不丢弃。
+   * 主要为了别把撤回/入群通知一起吞掉（契约允许 unknown，按 conv 记账）。
+   */
+  umoInvalid?: boolean;
   /** 收帧 UMO 与 conv 不一致；以 UMO 为准，但上层记录警告。 */
   convMismatch?: boolean;
   /** ISO 8601；缺失时由 World 补当前时间。 */
@@ -77,7 +82,10 @@ export interface SendResult {
   uncertain?: boolean;
   /** 桥是否真的把这条发成了语音（TTS 失败时会退回文字）。 */
   voice?: boolean;
-  /** 成功但有需要说明的事，例如「TTS 没开，已改发文字」。 */
+  /**
+   * 需要向人说明的补充信息。成功时例如「TTS 没开，已改发文字」；
+   * 失败时是中文说明（`error` 是稳定 code，`note` 才是给人看的原因）。
+   */
   note?: string;
 }
 
@@ -213,6 +221,14 @@ const CLOSE_REASONS: Record<number, string> = {
   4401: 'URL 里带了 token（凭据不能进 URL）',
   4403: '浏览器来源被拒（桥没有网页客户端）',
 };
+
+/**
+ * 这些 close code 说明“配置不对”，不改配置永远连不上（token/版本/来源）。
+ * 退避只在收到 ready 后才重置，这里再抬一个下限，避免每 1 秒重连刷日志。
+ */
+export const AUTH_REJECT_MIN_BACKOFF_MS = 10_000;
+
+const AUTH_REJECT_CODES: ReadonlySet<number> = new Set([4002, 4003, 4004, 4401, 4403]);
 
 export class AstrbotBridgeDriver implements BridgeDriver {
   private readonly opts: BridgeDriverOptions;
@@ -454,7 +470,8 @@ export class AstrbotBridgeDriver implements BridgeDriver {
         return;
       }
       this.connected = true;
-      this.backoffMs = this.opts.reconnectBaseMs ?? 1000;
+      // 退避不在这里重置：open 只说明 TCP/Upgrade 成功，token/版本错的连接
+      // 也是 open 之后才被桥用 4003/4004 拒绝。重置放在收到首个 ready 时。
       this.log.info('已连上 AstrBot 桥', { wsUrl: this.opts.wsUrl });
       try {
         // 握手帧：带上 token 与自己的显示名，桥据此认人。
@@ -522,6 +539,10 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       settle();
       if (isCurrent && !this.stopped) {
         if (wasConnected) this.emitState(false);
+        if (AUTH_REJECT_CODES.has(code)) {
+          // 配置错时按 10s 起步，别回到 1s 风暴；下次 ready 再恢复初始值。
+          this.backoffMs = Math.max(this.backoffMs, AUTH_REJECT_MIN_BACKOFF_MS);
+        }
         this.scheduleReconnect();
       }
     });
@@ -566,8 +587,9 @@ export class AstrbotBridgeDriver implements BridgeDriver {
 
   private scheduleReconnect(): void {
     if (this.reconnectTimer || this.stopped) return;
-    const delay = this.backoffMs;
-    this.backoffMs = Math.min(this.backoffMs * 2, this.opts.reconnectMaxMs ?? 30_000);
+    const cap = this.opts.reconnectMaxMs ?? 30_000;
+    const delay = Math.min(this.backoffMs, cap);
+    this.backoffMs = Math.min(this.backoffMs * 2, cap);
     this.log.debug(`${delay}ms 后重连桥`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
@@ -617,6 +639,8 @@ export class AstrbotBridgeDriver implements BridgeDriver {
               ok: false,
               error: String(frame.error ?? '桥拒绝发送'),
               uncertain: frame.uncertain === true,
+              // 失败时桥把中文说明放 note，code 在 error；透传给 World 拼回执。
+              note: typeof frame.note === 'string' && frame.note ? frame.note : undefined,
             },
       );
       return;
@@ -688,6 +712,8 @@ export class AstrbotBridgeDriver implements BridgeDriver {
         owners: this.ownerIds.length,
         tts: this.tts,
       });
+      // 首个 ready 才算真正连上；此时才把重连退避收回初始值。
+      this.backoffMs = this.opts.reconnectBaseMs ?? 1000;
       return;
     }
 
@@ -696,6 +722,9 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       if (!msg) {
         this.log.warn('消息帧形状不符，已忽略');
         return;
+      }
+      if (msg.umoInvalid) {
+        this.log.warn('消息帧的 UMO 非法，已按 conv 处理');
       }
       for (const cb of [...this.messageCbs]) {
         try {
@@ -810,7 +839,9 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
   const umoRaw = typeof frame.umo === 'string' ? frame.umo : convRaw?.umo;
   const umo = typeof umoRaw === 'string' && umoRaw.trim() !== '' ? umoRaw.trim() : undefined;
   const parsed = umo ? parseUmo(umo) : null;
-  if (umo && !parsed) return null;
+  // 非法 UMO 不能把整条帧（尤其是撤回/入群通知）丢掉：退回 conv 记账，上层打 warn。
+  const umoInvalid = Boolean(umo && !parsed);
+  const safeUmo = parsed ? parsed.raw : undefined;
 
   const convKindRaw = convRaw?.kind;
   const kind =
@@ -834,12 +865,13 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
 
   return {
     id: frame.id === undefined ? '' : String(frame.id),
-    ...(umo ? { umo } : {}),
+    ...(safeUmo ? { umo: safeUmo } : {}),
+    ...(umoInvalid ? { umoInvalid: true } : {}),
     ...(convMismatch ? { convMismatch: true } : {}),
     ts: typeof frame.ts === 'string' ? frame.ts : undefined,
     channel: frame.channel === 'qq' ? 'qq' : undefined,
     conv: {
-      ...(umo ? { umo } : {}),
+      ...(safeUmo ? { umo: safeUmo } : {}),
       kind,
       id,
       name: typeof convRaw?.name === 'string' ? convRaw.name : undefined,
