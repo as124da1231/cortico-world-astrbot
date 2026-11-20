@@ -119,8 +119,13 @@ export interface ToolResult {
   ok: boolean;
   /** ok 为 true 时的结果文本。 */
   result?: string;
-  /** ok 为 false 时的原因。 */
+  /** ok 为 false 时的原因（稳定错误码，例如 tool_failed）。 */
   error?: string;
+  /**
+   * 需要向人说明的补充信息（T-004）。失败时是中文说明，`error` 才是稳定 code；
+   * 成功时桥也可能带一句话说明。
+   */
+  note?: string;
 }
 
 /** 随消息一起发出的图片。桥按 base64 转给 AstrBot 的消息链。 */
@@ -656,7 +661,12 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       call.resolve(
         ok
           ? { ok: true, result: String(frame.result ?? '') }
-          : { ok: false, error: String(frame.error ?? '桥拒绝了这次工具调用') },
+          : {
+              ok: false,
+              error: String(frame.error ?? '桥拒绝了这次工具调用'),
+              // 失败时桥把中文说明放 note、code 在 error；原样带上，World 负责拼回执。
+              note: typeof frame.note === 'string' && frame.note ? frame.note : undefined,
+            },
       );
       return;
     }

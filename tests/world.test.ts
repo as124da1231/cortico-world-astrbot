@@ -1299,6 +1299,48 @@ describe('工具桥接', () => {
     expect(text).toContain('Permission denied');
   });
 
+  it('桥给了中文 note 时优先说人话，错误码放括号里', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ id: 'm8' }));
+    await Promise.resolve();
+    settle(world, host);
+    // 假驱动同样按 ToolResult 收结果，note 是失败回执里的中文说明。
+    driver.toolResult = {
+      ok: false,
+      error: 'tool_failed',
+      note: '工具执行失败，详情见插件日志',
+    };
+
+    const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'play_song_by_name' }, toolCtx());
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toContain('工具执行失败，详情见插件日志');
+    expect(text).toContain('（tool_failed）');
+  });
+
+  it('桥没给 note 时仍然显示错误码', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ id: 'm9' }));
+    await Promise.resolve();
+    settle(world, host);
+    driver.toolResult = { ok: false, error: 'busy' };
+
+    const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'play_song_by_name' }, toolCtx());
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toContain('busy');
+    expect(text).not.toContain('（busy）');
+  });
+
+  it('成功回执不受 note 逻辑影响', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ id: 'ma' }));
+    await Promise.resolve();
+    settle(world, host);
+    driver.toolResult = { ok: true, result: '已处理' };
+
+    const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'play_song_by_name' }, toolCtx());
+    expect(typeof out === 'string' ? out : out.text).toBe('已处理');
+  });
+
   it('工具清单进了环境提示词与状态工具', async () => {
     const { driver, world } = await mount();
     driver.emitTools([{ name: 'search_bilibili', risk: 'read', desc: '搜 B 站' }]);

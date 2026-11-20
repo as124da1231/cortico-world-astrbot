@@ -301,6 +301,43 @@ describe('发送失败回执', () => {
   });
 });
 
+describe('工具失败回执', () => {
+  it('失败时透传桥的 note，error 仍是稳定 code（T-004）', async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
+    const port = (wss.address() as { port: number }).port;
+    wss.on('connection', (client) => {
+      client.on('message', (raw) => {
+        const frame = JSON.parse(String(raw)) as Record<string, unknown>;
+        if (frame.t !== 'tool') return;
+        client.send(
+          JSON.stringify({
+            t: 'tool-ack',
+            rid: frame.rid,
+            ok: false,
+            error: 'tool_failed',
+            note: '工具执行失败，详情见插件日志',
+          }),
+        );
+      });
+    });
+
+    const driver = new AstrbotBridgeDriver({ wsUrl: `ws://127.0.0.1:${port}`, heartbeatMs: 0 });
+    try {
+      await driver.start();
+      const result = await driver.callTool('play_song_by_name', {}, 'm1');
+      expect(result).toEqual({
+        ok: false,
+        error: 'tool_failed',
+        note: '工具执行失败，详情见插件日志',
+      });
+    } finally {
+      await driver.stop();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    }
+  });
+});
+
 describe('非法 UMO 回退（G-004）', () => {
   it('带着 conv 的非法 UMO 按 conv 记账，通知不丢', () => {
     const msg = parseMessage({

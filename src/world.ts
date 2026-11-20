@@ -850,7 +850,11 @@ export class AstrbotWorld implements World {
         // 调用开始时还 active：工具耗时再长也不把它误判成过期（过期轮次不复活）。
         if (startedActive) this.turnChannelAt = Date.now();
         if (!res.ok) {
-          return { text: `工具 ${name} 没有执行：${res.error ?? '未知原因'}`, failed: true };
+          // T-004：桥把中文说明放 note、稳定错误码放 error；优先说人话，code 附在括号里。
+          const note = res.note;
+          const reason = note || res.error || '未知原因';
+          const code = note && res.error && res.error !== note ? `（${res.error}）` : '';
+          return { text: `工具 ${name} 没有执行：${reason}${code}`, failed: true };
         }
         return res.result && res.result.trim() !== ''
           ? res.result
