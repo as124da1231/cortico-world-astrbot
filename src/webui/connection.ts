@@ -62,6 +62,7 @@ function settingsCard(
   let enabled = st.enabled;
   let wsUrl = st.wsUrl;
   let token = '';
+  let ownerId = st.ownerId;
   let includeTime = st.includeTime;
   let channelHint = st.channelHint;
   let base = String(st.reconnectBaseMs);
@@ -96,6 +97,16 @@ function settingsCard(
     placeholder: st.tokenSet ? '已设置；留空保持不变' : '留空表示不校验',
     onInput: (value) => {
       token = value;
+      mark();
+    },
+  });
+
+  const ownerInput = ui.input({
+    value: ownerId,
+    placeholder: '例如 100000001',
+    cls: 'mono',
+    onInput: (value) => {
+      ownerId = value;
       mark();
     },
   });
@@ -143,6 +154,10 @@ function settingsCard(
     if (url && !/^wss?:\/\/.+/i.test(url)) {
       throw new Error('桥地址要以 ws:// 或 wss:// 开头');
     }
+    const owner = ownerId.trim();
+    if (owner && !/^\d+$/.test(owner)) {
+      throw new Error('主人 QQ 只填数字');
+    }
     const baseMs = Number.parseInt(base, 10);
     const maxMs = Number.parseInt(max, 10);
     if (!Number.isFinite(baseMs) || !Number.isFinite(maxMs)) {
@@ -156,6 +171,7 @@ function settingsCard(
       'worlds.astrbot.wsUrl': url,
       'worlds.astrbot.includeTime': includeTime,
       'worlds.astrbot.channelHint': channelHint,
+      'worlds.astrbot.ownerId': owner,
       'worlds.astrbot.reconnectBaseMs': Math.max(200, Math.min(baseMs, 60_000)),
       'worlds.astrbot.reconnectMaxMs': Math.max(1000, Math.min(maxMs, 600_000)),
     };
@@ -173,6 +189,19 @@ function settingsCard(
     enableBox.el,
     ui.field('桥地址', urlInput),
     ui.field('桥 token', tokenInput),
+  );
+
+  const tools = ui.h('div', 'astrbot-group');
+  tools.append(
+    ui.h('div', 'astrbot-glabel', '工具身份'),
+    ui.field('主人 QQ', ownerInput),
+    ui.h(
+      'div',
+      'astrbot-note',
+      st.admins.length
+        ? `AstrBot 管理员：${st.admins.join('、')}。Coo 对话轮次以这个身份调工具；留空表示不借身份。`
+        : '桥连上后会显示 AstrBot 的管理员。Coo 对话轮次以这个身份调工具；留空表示不借身份。',
+    ),
   );
 
   const behavior = ui.h('div', 'astrbot-group');
@@ -198,7 +227,7 @@ function settingsCard(
     bar.el,
   );
 
-  card.body.append(head(ctx, st), bridge, behavior, submit);
+  card.body.append(head(ctx, st), bridge, tools, behavior, submit);
   return card.el;
 }
 

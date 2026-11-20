@@ -109,19 +109,31 @@ astrbot_send_message
 ## 6. 工具链
 
 ```text
-astrbot_call_tool(name, args)
-  → 需要 qqTurnActive 和 turnMsgId
-  → driver.callTool(name, args, turn)
+QQ 轮次
+  astrbot_call_tool(name, args)
+  → 用这一轮的消息 id 当 turn
   → 帧 {t:'tool', rid, name, args, turn}
-  → 插件 _on_tool_call
-  → tool-ack
+  → 插件用那条消息的身份执行
+
+Coo 对话轮次
+  → 连接页里填的主人 QQ（ownerId）
+  → 帧 {t:'tool', rid, name, args, turn:'', actor:{kind:'owner', id}}
+  → 插件校验 id 在 admins_id
+  → 合成「主人私聊」事件，role=admin
+  → 工具的 event.send 落到主人私聊
+
+tool-ack → 模型
 ```
+
+没有 `ownerId` 时 Coo 轮次不借身份，直接告诉 Coo 去填。  
+不借上一条 QQ 消息。
 
 插件侧还会检查：
 
 ```text
 enabled
-turn 在 _turns 里，600 秒内
+turn 在 _turns 里，600 秒内（QQ 轮次）
+actor.id 在 admins_id 里（Coo 轮次）
 tools_allow
 AstrBot 工具权限
 ```
@@ -159,6 +171,7 @@ astrbot.disconnected
 | `maxSendsPerMinute` | `30` | deprecated，限流在插件 |
 | `includeTime` | `true` | 消息行首是否带时间 |
 | `channelHint` | `true` | 是否在需要回复的消息后加渠道提示 |
+| `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；留空表示不借 |
 
 ### Coo 侧「连接」页
 

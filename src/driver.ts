@@ -100,6 +100,12 @@ export interface ToolInfo {
   sig?: string;
 }
 
+/** 一次工具调用的身份：QQ 轮次用 turn，Coo 轮次用主人。 */
+export interface ToolActor {
+  kind: 'owner';
+  id: string;
+}
+
 /** 一次工具调用的回执。 */
 export interface ToolResult {
   ok: boolean;
@@ -138,7 +144,12 @@ export interface BridgeDriver {
   stop(): Promise<void>;
   send(conv: Conv, text: string, replyTo?: string, image?: OutgoingImage, voice?: boolean): Promise<SendResult>;
   /** 调一个桥那边启用的工具；turn 是触发这一轮的消息 id。 */
-  callTool(name: string, args: Record<string, unknown>, turn: string): Promise<ToolResult>;
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    turn: string,
+    actor?: ToolActor,
+  ): Promise<ToolResult>;
 }
 
 export interface BridgeDriverOptions {
@@ -258,14 +269,19 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   }
 
   /** 调一个桥那边启用的工具。未连接、超时或被拒都返回 ok:false。 */
-  callTool(name: string, args: Record<string, unknown>, turn: string): Promise<ToolResult> {
+  callTool(
+    name: string,
+    args: Record<string, unknown>,
+    turn: string,
+    actor?: ToolActor,
+  ): Promise<ToolResult> {
     return new Promise((resolve) => {
       const ws = this.ws;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         resolve({ ok: false, error: '与 AstrBot 桥的连接未建立' });
         return;
       }
-      if (!turn) {
+      if (!turn && !actor) {
         resolve({ ok: false, error: '不知道这一轮是谁说的，不能调工具' });
         return;
       }
@@ -277,7 +293,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       }, timeout);
       this.pendingTools.set(rid, { resolve, timer });
       try {
-        ws.send(JSON.stringify({ t: 'tool', rid, name, args, turn }));
+        ws.send(JSON.stringify({ t: 'tool', rid, name, args, turn, ...(actor ? { actor } : {}) }));
       } catch (err) {
         clearTimeout(timer);
         this.pendingTools.delete(rid);

@@ -21,6 +21,11 @@ export interface AstrbotConfigSection {
   reconnectMaxMs: number;
   /** 回复 QQ 消息时附带渠道提示（@/图片/私聊）。 */
   channelHint: boolean;
+  /**
+   * Coo 对话轮次调用 AstrBot 工具时使用的管理员 QQ。
+   * 留空表示 Coo 轮次不借工具身份；AstrBot 的管理员名单仍是唯一权限来源。
+   */
+  ownerId: string;
 
   /**
    * @deprecated 由 AstrBot 插件控制；仅保留旧配置读取，World 不再使用。
@@ -64,6 +69,7 @@ export const ASTRBOT_DEFAULTS: AstrbotConfigSection = {
   reconnectBaseMs: 1000,
   reconnectMaxMs: 30_000,
   channelHint: true,
+  ownerId: '',
   // 旧配置兼容；World 不再读取，实际策略由 AstrBot 插件决定。
   mode: 'mention',
   nameAliases: '',
@@ -125,6 +131,13 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description:
           '回复 QQ 消息时附带渠道提示（@、图片、私聊），帮助 Coo 判断该用发送工具还是 pet_say。',
+      },
+      'worlds.astrbot.ownerId': {
+        type: 'string',
+        title: '主人 QQ',
+        'x-hot': true,
+        description:
+          'Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；必须是 AstrBot 的 admins_id 之一。留空表示 Coo 轮次不调用工具。',
       },
     },
   },

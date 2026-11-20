@@ -23,6 +23,7 @@ import {
   type BridgeMessage,
   type Conv,
   type OutgoingImage,
+  type ToolActor,
   type ToolInfo,
 } from './driver.ts';
 import { convOfEvent, renderLatest, renderSearch } from './history.ts';
@@ -293,6 +294,8 @@ export class AstrbotWorld implements World {
       tokenSet: !!cfg.token,
       includeTime: cfg.includeTime !== false,
       channelHint: cfg.channelHint !== false,
+      ownerId: String(cfg.ownerId ?? ''),
+      admins: this.driver?.ownerIds ?? [],
       reconnectBaseMs: cfg.reconnectBaseMs ?? 1000,
       reconnectMaxMs: cfg.reconnectMaxMs ?? 30_000,
       self: this.driver?.self ?? null,
@@ -772,16 +775,31 @@ export class AstrbotWorld implements World {
         if (!driver || !driver.connected) {
           return { text: '与 AstrBot 桥的连接未建立，工具没有执行。', failed: true };
         }
-        // 工具用「触发这一轮的那条消息」的身份执行。桌宠轮次没有 QQ 身份，
-        // 不能拿上一条 QQ 消息顶替，否则等于换了个人的手。
-        const turn = this.qqTurnActive() ? this.turnMsgId : '';
-        if (!turn) {
-          return {
-            text: '这一轮没有可以借用身份的人话消息（可能只有通知或桌宠事件），不能执行工具。',
-            failed: true,
-          };
+        // QQ 轮次用触发这一轮的消息；Coo 对话轮次用「连接」里指定的主人 QQ。
+        // 两者都拿不到时拒绝，不借上一条 QQ 消息。
+        let turn = '';
+        let actor: ToolActor | undefined;
+        if (this.qqTurnActive()) {
+          turn = this.turnMsgId;
+        } else {
+          const ownerId = String(this.opts.cfg.ownerId ?? '').trim();
+          if (!ownerId) {
+            return {
+              text:
+                '这一轮不是 QQ 消息。要在 Coo 对话里用 AstrBot 工具，先在「连接」里填主人 QQ。',
+              failed: true,
+            };
+          }
+          const admins = driver.ownerIds;
+          if (admins.length > 0 && !admins.includes(ownerId)) {
+            return {
+              text: `主人 QQ ${ownerId} 不在 AstrBot 的管理员名单里，工具没有执行。`,
+              failed: true,
+            };
+          }
+          actor = { kind: 'owner', id: ownerId };
         }
-        const res = await driver.callTool(name, args, turn);
+        const res = await driver.callTool(name, args, turn, actor);
         if (!res.ok) {
           return { text: `工具 ${name} 没有执行：${res.error ?? '未知原因'}`, failed: true };
         }

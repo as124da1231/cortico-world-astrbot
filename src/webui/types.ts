@@ -7,6 +7,8 @@ export interface ConnectionState {
   tokenSet: boolean;
   includeTime: boolean;
   channelHint: boolean;
+  ownerId: string;
+  admins: string[];
   reconnectBaseMs: number;
   reconnectMaxMs: number;
   self: { id?: string; name?: string } | null;

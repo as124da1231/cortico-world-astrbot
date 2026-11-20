@@ -112,7 +112,12 @@ export class FakeDriver implements BridgeDriver {
   sent: Array<{ conv: Conv; text: string; replyTo?: string; image?: OutgoingImage; voice?: boolean }> = [];
   sendResult: SendResult = { ok: true };
   /** 工具调用记录，测试用来断言 name / args / turn。 */
-  toolCalls: Array<{ name: string; args: Record<string, unknown>; turn: string }> = [];
+  toolCalls: Array<{
+    name: string;
+    args: Record<string, unknown>;
+    turn: string;
+    actor?: { kind: 'owner'; id: string };
+  }> = [];
   toolResult: ToolResult = { ok: true, result: 'ok' };
 
   private messageCbs: Array<(m: BridgeMessage) => void> = [];
@@ -136,8 +141,9 @@ export class FakeDriver implements BridgeDriver {
     name: string,
     args: Record<string, unknown>,
     turn: string,
+    actor?: { kind: 'owner'; id: string },
   ): Promise<ToolResult> {
-    this.toolCalls.push({ name, args, turn });
+    this.toolCalls.push({ name, args, turn, ...(actor ? { actor } : {}) });
     return this.toolResult;
   }
   async start(): Promise<void> {

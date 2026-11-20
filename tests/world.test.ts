@@ -1178,7 +1178,7 @@ describe('工具桥接', () => {
     expect(typeof out === 'string' ? out : out.text).toBe('歌单：七里香');
   });
 
-  it('桌宠轮次不能借用上一条 QQ 消息的身份调工具', async () => {
+  it('桌宠轮次没有主人 QQ 时不借上一条消息的身份', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage(groupMsg({ id: 'm42' }));
     await Promise.resolve();
@@ -1188,7 +1188,39 @@ describe('工具桥接', () => {
     const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls).toHaveLength(0);
     const text = typeof out === 'string' ? out : out.text;
-    expect(text).toContain('人话消息');
+    expect(text).toContain('主人 QQ');
+  });
+
+  it('Coo 轮次用连接页里的主人 QQ 借身份', async () => {
+    const { driver, world } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    driver.toolResult = { ok: true, result: '晴天 / 周杰伦' };
+
+    const out = await handlerOf(world, 'astrbot_call_tool')(
+      { name: 'query_lyrics_by_name', args: { song: '晴天' } },
+      toolCtx(),
+    );
+
+    expect(driver.toolCalls).toEqual([
+      {
+        name: 'query_lyrics_by_name',
+        args: { song: '晴天' },
+        turn: '',
+        actor: { kind: 'owner', id: '100000001' },
+      },
+    ]);
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toBe('晴天 / 周杰伦');
+  });
+
+  it('主人 QQ 不在 AstrBot 管理员里时拒绝', async () => {
+    const { driver, world } = await mount({ ownerId: '10001' });
+    driver.ownerIds = ['100000001'];
+
+    const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toContain('不在 AstrBot 的管理员名单');
   });
 
   it('World 不再过滤群消息，最后一条成为工具身份', async () => {
@@ -1234,7 +1266,7 @@ describe('工具桥接', () => {
     const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls).toHaveLength(0);
     const text = typeof out === 'string' ? out : out.text;
-    expect(text).toContain('人话消息');
+    expect(text).toContain('主人 QQ');
   });
 
   it('桥拒绝时把原因带回去', async () => {
