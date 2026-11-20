@@ -193,6 +193,16 @@ export const DEFAULT_HEARTBEAT_MS = 20_000;
  *  120 秒而不是 60 秒：群安静、机器休眠回来时，60 秒会误判成断线。 */
 export const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 
+/** 桥在握手阶段拒绝客户端时用的 close code 与可读原因；重连仍会继续。 */
+const CLOSE_REASONS: Record<number, string> = {
+  4001: '握手超时',
+  4002: '第一帧不是 hello',
+  4003: 'token 不匹配（检查两边配置）',
+  4004: '协议版本不匹配（升级 World 或插件）',
+  4401: 'URL 里带了 token（凭据不能进 URL）',
+  4403: '浏览器来源被拒（桥没有网页客户端）',
+};
+
 export class AstrbotBridgeDriver implements BridgeDriver {
   private readonly opts: BridgeDriverOptions;
   private readonly log: Logger;
@@ -471,7 +481,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       this.log.warn('桥连接错误', { error: err.message });
     });
 
-    ws.on('close', () => {
+    ws.on('close', (code, reason) => {
       const isCurrent = this.ws === ws;
       const wasConnected = this.connected;
       if (isCurrent) {
@@ -480,6 +490,16 @@ export class AstrbotBridgeDriver implements BridgeDriver {
         this.connected = false;
         this.rejectAllPending('与桥的连接已断开', true);
         if (wasConnected) this.log.info('与 AstrBot 桥的连接已断开');
+      }
+      if (isCurrent && !this.stopped) {
+        const hint = CLOSE_REASONS[code];
+        if (hint) {
+          this.log.warn('桥拒绝了这次连接', {
+            code,
+            reason: reason?.toString() || hint,
+            hint,
+          });
+        }
       }
       settle();
       if (isCurrent && !this.stopped) {
