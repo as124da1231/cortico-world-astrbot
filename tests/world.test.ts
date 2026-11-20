@@ -1,4 +1,4 @@
-﻿import { readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EventEnvelope, ToolCallContext } from 'cortico/core/types.ts';
 import { ASTRBOT_DEFAULTS, normalizeMode, parseAliases, type AstrbotConfigSection } from '../src/config.ts';
