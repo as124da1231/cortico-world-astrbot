@@ -1,8 +1,10 @@
-﻿import { describe, expect, it } from 'vitest';
-import type { ToolCallContext } from 'cortico/core/types.ts';
+﻿import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { EventEnvelope, ToolCallContext } from 'cortico/core/types.ts';
 import { ASTRBOT_DEFAULTS, normalizeMode, parseAliases, type AstrbotConfigSection } from '../src/config.ts';
 import { ASTRBOT } from '../src/definition.ts';
-import { AstrbotWorld } from '../src/world.ts';
+import { AstrbotWorld, CALL_TOOL_DECL, QQ_TURN_TTL_MS } from '../src/world.ts';
+import { readLatest } from '../src/history.ts';
 import { parseFrame, parseMessage } from '../src/driver.ts';
 import { FakeDriver, FakeHost } from './helpers/fake-bridge.ts';
 
@@ -568,8 +570,21 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
   });
 
-  it('只有 QQ 通知时，仍然可以回到那个会话', async () => {
+  it('只有 QQ 通知时，不建立轮次也不清上一轮', async () => {
     const { driver, world } = await mount({ mode: 'all' });
+    // 先有一条人话，再单独来一条通知：通知不清上一轮。
+    world.onEventsSettled(
+      [
+        {
+          type: 'astrbot.message',
+          origin: 'external',
+          source: 'astrbot',
+          text: '在吗',
+          meta: { conv: { kind: 'group', id: '123456', name: '测试群' }, message_id: 'm1' },
+        } as unknown as EventEnvelope,
+      ],
+      'delivered',
+    );
     world.onEventsSettled(
       [
         {
@@ -581,7 +596,7 @@ describe('发消息工具', () => {
             notice: true,
             conv: { kind: 'group', id: '123456' },
           },
-        } as unknown as import('cortico/core/types.ts').EventEnvelope,
+        } as unknown as EventEnvelope,
       ],
       'delivered',
     );
@@ -1309,5 +1324,346 @@ describe('工具桥接', () => {
     text = typeof out === 'string' ? out : out.text;
     expect(text).toContain('这一轮：QQ群「测试群」');
     expect(text).toContain('最近收到：QQ群「测试群」 小明 18:52');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-001 / W-003 / W-008 / W-015：轮次判定与身份收紧
+// ---------------------------------------------------------------------------
+
+const QQ_CONV = { kind: 'group', id: '123456', name: '测试群' } as const;
+
+function humanEvent(id = 'm1', conv: Record<string, unknown> = QQ_CONV): EventEnvelope {
+  return {
+    type: 'astrbot.message',
+    origin: 'external',
+    source: 'astrbot',
+    text: '在吗',
+    meta: { conv, message_id: id },
+  } as unknown as EventEnvelope;
+}
+
+function qqNoticeEvent(conv: Record<string, unknown> = { kind: 'group', id: '999999' }): EventEnvelope {
+  return {
+    type: 'astrbot.message',
+    origin: 'external',
+    source: 'astrbot',
+    text: '[撤回] 别人撤回了一条消息',
+    meta: { notice: true, conv, message_id: 'n1' },
+  } as unknown as EventEnvelope;
+}
+
+function toolNoticeEvent(): EventEnvelope {
+  return {
+    type: 'astrbot.notice',
+    origin: 'external',
+    source: 'astrbot',
+    text: '[AstrBot] 可用工具：x',
+    meta: { kind: 'tools' },
+  } as unknown as EventEnvelope;
+}
+
+function petEvent(): EventEnvelope {
+  return {
+    type: 'desktop-pet.message',
+    origin: 'external',
+    source: 'desktop-pet',
+    text: '[touch]',
+    meta: {},
+  } as unknown as EventEnvelope;
+}
+
+function toolHandler(world: AstrbotWorld, name: string) {
+  const tool = world.tools().find((t) => t.name === name);
+  if (!tool) throw new Error(`没有工具 ${name}`);
+  return tool.handler;
+}
+
+describe('轮次判定：通知不建立也不污染 QQ 轮次', () => {
+  it('[人话, 工具清单通知] 不算 mixed，正常发 QQ', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent('m1'), toolNoticeEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '在的' }, toolCtx());
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv.id).toBe('123456');
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+  });
+
+  it('[人话, 桌宠] 仍算 mixed，QQ 出口关闭', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent(), petEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '你好' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toContain('同时有 QQ 和非 QQ');
+    expect(typeof out === 'string' ? false : out.failed).toBe(true);
+  });
+
+  it('[人话] 之后单独来 [QQ 通知]，发送仍回原群', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent()], 'delivered');
+    world.onEventsSettled([qqNoticeEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '看到了' }, toolCtx());
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv.id).toBe('123456');
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+  });
+
+  it('纯通知（没有上一轮）不建立轮次，发送拒绝', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([qqNoticeEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '发一下' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? false : out.failed).toBe(true);
+  });
+
+  it('纯桌宠批次清空上一轮 QQ 出口', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent()], 'delivered');
+    world.onEventsSettled([petEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '桌宠里说的话' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? false : out.failed).toBe(true);
+  });
+
+  it('纯 astrbot.notice 保留上一轮 QQ 出口', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent()], 'delivered');
+    world.onEventsSettled([toolNoticeEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '还在' }, toolCtx());
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv.id).toBe('123456');
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+  });
+});
+
+describe('工具身份：mixed / 过期轮次不得回退 owner', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('mixed 轮次不借主人身份', async () => {
+    const { driver, world } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    world.onEventsSettled([humanEvent(), petEvent()], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不能借主人身份');
+  });
+
+  it('过期的 QQ 轮次不借主人身份', async () => {
+    vi.useFakeTimers();
+    const { driver, world } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    world.onEventsSettled([humanEvent()], 'delivered');
+    vi.advanceTimersByTime(QQ_TURN_TTL_MS + 1);
+
+    const out = await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('过期');
+  });
+
+  it('QQ 轮次没有可执行消息 id 时拒绝，不回退 owner', async () => {
+    const { driver, world } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    // 有人话，但帧里没有 message_id：不能拿来当工具身份。
+    const noId = {
+      type: 'astrbot.message',
+      origin: 'external',
+      source: 'astrbot',
+      text: '在吗',
+      meta: { conv: QQ_CONV },
+    } as unknown as EventEnvelope;
+    world.onEventsSettled([noId], 'delivered');
+
+    const out = await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('没有可执行工具');
+  });
+
+  it('90s 间隔的连续工具调用靠 touchTurn 续期，不被 2 分钟 TTL 误伤', async () => {
+    vi.useFakeTimers();
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent('m42')], 'delivered');
+
+    for (let i = 0; i < 3; i++) {
+      await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+      vi.advanceTimersByTime(90_000);
+    }
+
+    expect(driver.toolCalls.map((c) => c.turn)).toEqual(['m42', 'm42', 'm42']);
+    expect(driver.toolCalls.every((c) => !c.actor)).toBe(true);
+  });
+
+  it('单个工具耗时超过 2 分钟，返回后仍续期', async () => {
+    vi.useFakeTimers();
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent('m42')], 'delivered');
+
+    driver.callTool = async (name, args, turn, actor) => {
+      vi.advanceTimersByTime(QQ_TURN_TTL_MS + 30_000);
+      driver.toolCalls.push({ name, args, turn, ...(actor ? { actor } : {}) });
+      return { ok: true, result: 'ok' };
+    };
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'slow_tool' }, toolCtx());
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'next' }, toolCtx());
+
+    expect(driver.toolCalls[1]?.turn).toBe('m42');
+    expect(driver.toolCalls[1]?.actor).toBeUndefined();
+  });
+
+  it('QQ 轮次后紧跟纯桌宠批次（没有 onTurnEnded）：清空后走 owner', async () => {
+    const { driver, world } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    world.onEventsSettled([humanEvent('m42')], 'delivered');
+    world.onEventsSettled([petEvent()], 'delivered');
+
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls[0]?.turn).toBe('');
+    expect(driver.toolCalls[0]?.actor).toEqual({ kind: 'owner', id: '100000001' });
+  });
+
+  it('纯 Coo 轮次仍用连接页里的主人 QQ', async () => {
+    const { driver, world } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls[0]?.actor).toEqual({ kind: 'owner', id: '100000001' });
+  });
+});
+
+describe('会话参数：数字 conv_id 与失败回执', () => {
+  async function twoConvs() {
+    const mounted = await mount({ mode: 'all' });
+    const { driver, host } = mounted;
+    driver.emitMessage({
+      ...groupMsg({ id: 'g1', text: '甲群说话' }),
+      umo: 'default:GroupMessage:111',
+      conv: { kind: 'group', id: '111', name: '甲群', umo: 'default:GroupMessage:111' },
+    });
+    await Promise.resolve();
+    driver.emitMessage({
+      ...groupMsg({ id: 'g2', text: '乙群说话' }),
+      umo: 'default:GroupMessage:222',
+      conv: { kind: 'group', id: '222', name: '乙群', umo: 'default:GroupMessage:222' },
+    });
+    await Promise.resolve();
+    settle(mounted.world, host);
+    return mounted;
+  }
+
+  it('数字 conv_id 正确找到已知会话', async () => {
+    const { driver, world } = await twoConvs();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '回甲群', conv_id: 111 },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv).toMatchObject({ kind: 'group', id: '111' });
+    expect(driver.sent[0]?.conv.umo).toBe('default:GroupMessage:111');
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+  });
+
+  it('conv_id 是对象时明确失败，不落回 reply_to / 当前轮', async () => {
+    const { driver, world } = await twoConvs();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: 'x', conv_id: { id: 111 } },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('conv_id 必须是字符串或数字');
+  });
+
+  it('conv_kind 非法时明确失败', async () => {
+    const { driver, world } = await twoConvs();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: 'x', conv_id: '111', conv_kind: 'channel' },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('conv_kind 只能是');
+  });
+
+  it('conv_id 为空串时回退当前轮', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ id: 'g1', umo: 'default:GroupMessage:222' }));
+    await Promise.resolve();
+    settle(world, host);
+
+    await toolHandler(world, 'astrbot_send_message')({ text: 'x', conv_id: '' }, toolCtx());
+    expect(driver.sent[0]?.conv.id).toBe('123456');
+  });
+
+  it('发送失败的英文 code 不吞掉中文 note', async () => {
+    const { driver, world } = await twoConvs();
+    driver.sendResult = {
+      ok: false,
+      error: 'send_failed',
+      note: '发送失败，详情见插件日志',
+      uncertain: true,
+    };
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: 'x', conv_id: 111 },
+      toolCtx(),
+    );
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).toContain('发送失败，详情见插件日志');
+    expect(text).toContain('send_failed');
+    expect(text).toContain('可能已经发出');
+  });
+});
+
+describe('历史与提示词（W-006 / W-015 / W-016）', () => {
+  it('readLatest 扫描有上限，不会为冷会话翻遍整库', () => {
+    let calls = 0;
+    const store = {
+      latestCursor: () => 10_000_000,
+      range: (q: { toCursor?: number; limit?: number }) => {
+        calls += 1;
+        const size = q.limit ?? 100;
+        const end = q.toCursor ?? 10_000_000;
+        return Array.from({ length: size }, (_, i) => ({
+          cursor: end - i,
+          type: 'astrbot.message',
+          origin: 'external',
+          source: 'astrbot',
+          text: '别群消息',
+          meta: { conv: { kind: 'group', id: 'other' } },
+        })) as unknown as EventEnvelope[];
+      },
+    } as unknown as Parameters<typeof readLatest>[0];
+
+    const out = readLatest(store, { kind: 'group', id: '123456' }, 100);
+    expect(out).toEqual([]);
+    expect(calls).toBeLessThanOrEqual(201);
+  });
+
+  it('桥通知会变成 astrbot.notice 事件', async () => {
+    const { driver, host } = await mount({ mode: 'all' });
+    driver.emitNotice({ kind: 'test', text: '桥推来的通知' });
+    await Promise.resolve();
+    await Promise.resolve();
+    const last = host.events[host.events.length - 1];
+    expect(last?.type).toBe('astrbot.notice');
+    expect(last?.text).toContain('桥推来的通知');
+  });
+
+  it('提示词写明两条身份路径，不再说桌宠轮次调不了工具', () => {
+    const prompt = readFileSync(new URL('../src/ENV_PROMPT.md', import.meta.url), 'utf8');
+    expect(prompt).not.toContain('调不了这些工具');
+    expect(prompt).not.toContain('要发到别处再显式');
+    expect(prompt).toContain('主人 QQ');
+    expect(prompt).toContain('不要假装成功');
+
+    expect(CALL_TOOL_DECL.description).toContain('owner QQ');
+    expect(CALL_TOOL_DECL.description).not.toContain('desktop-pet turn has no QQ identity');
+    expect(CALL_TOOL_DECL.description).toContain('say so honestly');
   });
 });

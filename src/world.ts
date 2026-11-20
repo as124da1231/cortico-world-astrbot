@@ -38,6 +38,12 @@ export const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 export const SCREENSHOT_GRANT_MS = 120_000;
 
 /**
+ * QQ 轮次里身份和发送的安全 TTL。正常靠 onTurnEnded / onRunPhase 清理；
+ * 长工具链靠 touchTurn() 续期。过期后不再借 QQ 身份，也不回退到主人身份。
+ */
+export const QQ_TURN_TTL_MS = 2 * 60_000;
+
+/**
  * 等桥完成首次连接的默认上限。到点先让 Coo 继续启动，驱动在后台继续重连；
  * 单个 World 不该把整条启动链拖死。
  */
@@ -80,9 +86,10 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       'shows on the host computer screen, and nobody in the QQ group can see or hear it. ' +
       'Text, an image, or both. Set voice=true to speak a short text reply out loud ' +
       '(TTS; falls back to text if the bridge has no TTS). ' +
-      'Omit conv_id to reply in the conversation this turn came from; without a QQ ' +
-      'event in this turn, pass conv_id explicitly. The bridge can only deliver to a ' +
-      'conversation it has already seen, so an unknown conversation fails with a reason.',
+      'Only in a QQ turn: omit conv_id to reply in the conversation this turn came from. ' +
+      'Without a QQ event in this turn it refuses, so wait for a QQ message instead of ' +
+      'guessing. The bridge can only deliver to a conversation it has already seen, so ' +
+      'an unknown conversation fails with a reason.',
     tags: ['write'],
     parameters: {
       type: 'object',
@@ -105,11 +112,11 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         conv_kind: {
           type: 'string',
           enum: ['group', 'private'],
-          description: 'Conversation kind. Defaults to the latest conversation.',
+          description: 'Conversation kind. Defaults to the conversation of this QQ turn.',
         },
         conv_id: {
           type: 'string',
-          description: 'Group id or user id. Defaults to the latest conversation.',
+          description: 'Group id or user id. Defaults to the conversation of this QQ turn.',
         },
         reply_to: {
           type: 'string',
@@ -167,9 +174,12 @@ export const CALL_TOOL_DECL: Omit<ToolDef, 'handler'> = {
   description:
     'Call one of the AstrBot tools enabled for this bridge, by name and with its own arguments. ' +
     'The list of available tools is in your environment prompt (astrbot.tools); if it looks stale, ' +
-    'call astrbot_status. A tool runs with the identity of the person whose message started this turn, ' +
-    'so admin-only tools are refused when a group member is talking. Only available in a QQ turn: ' +
-    'a desktop-pet turn has no QQ identity and is refused.',
+    'call astrbot_status. There are two identity paths: in a QQ turn the tool runs with the ' +
+    'identity of the person whose message started this turn, so admin-only tools are refused ' +
+    'when a group member is talking; in a Coo conversation turn (desktop pet or console) it runs ' +
+    'as the owner QQ filled in the connection settings, but only when that number is in AstrBot ' +
+    'admins—otherwise it is refused. When a tool fails or is refused, say so honestly and do not ' +
+    'pretend it succeeded.',
   tags: ['write'],
   parameters: {
     type: 'object',
@@ -457,11 +467,7 @@ export class AstrbotWorld implements World {
     const driver = this.driver;
     this.driver = undefined;
     this.connected = false;
-    this.turnChannel = undefined;
-    this.turnConv = undefined;
-    this.turnMsgId = '';
-    this.turnMixed = false;
-    this.turnMultiConv = false;
+    this.clearTurn();
     if (driver) await driver.stop();
   }
 
@@ -469,12 +475,14 @@ export class AstrbotWorld implements World {
    * Core 在把这一批事件交给模型前回调。只认本 World 投递成功的 QQ 事件：
    * 这一轮有 QQ 消息，才允许用 QQ 出口。比「最近 N 秒来过 QQ 消息」准，
    * 因为桌宠轮次不会把上一轮的 QQ 消息误算进来。
+   *
+   * 判定只看「人话」（human）：纯 QQ 通知（撤回/入群/戳一戳）既不能建立轮次，
+   * 也不能把上一轮打成 mixed。`others` 排除所有 `astrbot.*`，工具清单/桥通知
+   * 不算桌宠/控制台渠道。
    */
   onEventsSettled(events: readonly EventEnvelope[], outcome: 'delivered' | 'discarded'): void {
     if (outcome !== 'delivered') return;
 
-    // 看「这一批里有什么」，不只盯着 QQ。通知也算 QQ 渠道，但它不是人话：
-    // 会话可以用通知的，工具身份只能取人话那一条。
     const messages = events.filter((e) => {
       if (e.origin !== 'external') return false;
       if (e.type.endsWith('.self')) return false;
@@ -485,12 +493,29 @@ export class AstrbotWorld implements World {
     if (messages.length === 0) return;
 
     const qq = messages.filter((e) => e.type === 'astrbot.message');
-    const others = messages.filter((e) => e.type !== 'astrbot.message');
-    this.turnMixed = qq.length > 0 && others.length > 0;
     const human = qq.filter((e) => {
       const meta = e.meta as { notice?: boolean } | undefined;
       return meta?.notice !== true;
     });
+    // 桌宠/控制台等非 AstrBot 渠道；工具清单、桥通知等 astrbot.* 通知不算。
+    const others = messages.filter(
+      (e) => e.type !== 'astrbot.message' && !e.type.startsWith('astrbot.'),
+    );
+
+    if (qq.length === 0) {
+      // 纯 astrbot.notice（工具清单、桥通知）：保留上一轮，不建立也不清空。
+      if (others.length === 0) return;
+      // 纯桌宠/控制台：QQ 出口立刻关掉。
+      this.clearTurn();
+      return;
+    }
+    if (human.length === 0) {
+      // 纯 QQ 通知：不建立新轮次，也不改上一轮；和桌宠同批时才清空。
+      if (others.length > 0) this.clearTurn();
+      return;
+    }
+
+    this.turnMixed = others.length > 0;
     // 只有「人话」跨会话才算歧义；通知不该把回复目标带到别的群。
     const convKeys = new Set(
       human
@@ -502,62 +527,65 @@ export class AstrbotWorld implements World {
     );
     this.turnMultiConv = convKeys.size > 1;
 
-    if (qq.length === 0) {
-      // 最新一批没有 QQ：上一轮的 QQ 出口立刻关掉。
-      this.turnChannel = undefined;
-      this.turnConv = undefined;
-      this.turnMsgId = '';
-      return;
-    }
-
-    const last = qq[qq.length - 1]!;
-    const lastHuman = human[human.length - 1];
+    const lastHuman = human[human.length - 1]!;
     const first = this.turnChannel !== 'qq';
     this.turnChannel = 'qq';
     this.turnChannelAt = Date.now();
-    // 会话优先取「人话」；只有整批都是通知时，才用通知的会话。
-    const convSource = lastHuman ?? last;
-    const meta = convSource.meta as { conv?: Conv } | undefined;
+    // 会话、消息 id、时间都只从人话取；通知不能当发送目标或工具身份。
+    const meta = lastHuman.meta as { conv?: Conv; message_id?: unknown } | undefined;
     if (meta?.conv) this.turnConv = meta.conv;
-
-    this.turnMsgId = lastHuman
-      ? String((lastHuman.meta as { message_id?: unknown } | undefined)?.message_id ?? '')
-      : '';
+    this.turnMsgId = String(meta?.message_id ?? '');
 
     if (first) {
       const c = this.turnConv;
       this.host?.log.info('本轮渠道：QQ', {
         conv: c ? `${c.kind}:${c.id}` : 'unknown',
-        events: qq.length,
+        events: human.length,
         mixed: this.turnMixed,
       });
     }
   }
 
-  /** 一轮结束：下一轮如果只有桌宠事件，QQ 出口就该关上。 */
-  onTurnEnded(): void {
+  /** 清掉 QQ 轮次的全部状态；stop / 轮次结束 / 纯桌宠批次都走这里。 */
+  private clearTurn(): void {
     this.turnChannel = undefined;
     this.turnConv = undefined;
     this.turnMsgId = '';
     this.turnMixed = false;
     this.turnMultiConv = false;
+    this.turnChannelAt = 0;
+  }
+
+  /** 一轮结束：下一轮如果只有桌宠事件，QQ 出口就该关上。 */
+  onTurnEnded(): void {
+    this.clearTurn();
   }
 
   /** 运行阶段回到 idle 时也清掉 QQ 轮次，避免桌宠/控制台复用上一轮 QQ 工具。 */
   onRunPhase(phase: RunPhase): void {
     if (phase.state !== 'idle') return;
-    this.turnChannel = undefined;
-    this.turnConv = undefined;
-    this.turnMsgId = '';
-    this.turnMixed = false;
-    this.turnMultiConv = false;
+    this.clearTurn();
   }
 
-  /** 这一轮是不是 QQ 轮次；onTurnEnded 万一没来，30 分钟后自动失效。 */
+  /** 这一轮是不是 QQ 轮次；onTurnEnded 万一没来，短 TTL 后自动失效。 */
   private qqTurnActive(): boolean {
     if (this.turnMixed) return false;
     if (this.turnChannel !== 'qq') return false;
-    return Date.now() - this.turnChannelAt < 2 * 60_000;
+    return Date.now() - this.turnChannelAt < QQ_TURN_TTL_MS;
+  }
+
+  /** 这一轮建立过 QQ 轮次但已经超过安全 TTL。 */
+  private turnExpired(): boolean {
+    if (this.turnChannel !== 'qq') return false;
+    return Date.now() - this.turnChannelAt >= QQ_TURN_TTL_MS;
+  }
+
+  /**
+   * 工具/发送开始时若这一轮仍然有效，就把 TTL 起点推到现在。
+   * 过期轮次不会被复活。
+   */
+  private touchTurn(): void {
+    if (this.qqTurnActive()) this.turnChannelAt = Date.now();
   }
 
   /** 当前端点的模型能不能直接读图；读不了就让桥只发文字描述。 */
@@ -775,12 +803,31 @@ export class AstrbotWorld implements World {
         if (!driver || !driver.connected) {
           return { text: '与 AstrBot 桥的连接未建立，工具没有执行。', failed: true };
         }
-        // QQ 轮次用触发这一轮的消息；Coo 对话轮次用「连接」里指定的主人 QQ。
-        // 两者都拿不到时拒绝，不借上一条 QQ 消息。
+        // QQ 轮次用触发这一轮的人话消息；Coo 对话轮次用「连接」里指定的主人 QQ。
+        // mixed 或过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。
         let turn = '';
         let actor: ToolActor | undefined;
-        if (this.qqTurnActive()) {
+        const startedActive = this.qqTurnActive();
+        if (startedActive) {
+          if (!this.turnMsgId) {
+            return {
+              text: '这一轮没有可执行工具的人话消息（只有 QQ 通知），工具没有执行。',
+              failed: true,
+            };
+          }
+          // 长工具链靠这里续期；调用返回后再补一次，见下方。
+          this.touchTurn();
           turn = this.turnMsgId;
+        } else if (this.turnMixed) {
+          return {
+            text: '这一轮同时有 QQ 和非 QQ 事件，不能借主人身份，工具没有执行。',
+            failed: true,
+          };
+        } else if (this.turnExpired()) {
+          return {
+            text: '本轮 QQ 消息已过期，不能借主人身份，工具没有执行；等 QQ 那边有人说话再试。',
+            failed: true,
+          };
         } else {
           const ownerId = String(this.opts.cfg.ownerId ?? '').trim();
           if (!ownerId) {
@@ -800,6 +847,8 @@ export class AstrbotWorld implements World {
           actor = { kind: 'owner', id: ownerId };
         }
         const res = await driver.callTool(name, args, turn, actor);
+        // 调用开始时还 active：工具耗时再长也不把它误判成过期（过期轮次不复活）。
+        if (startedActive) this.turnChannelAt = Date.now();
         if (!res.ok) {
           return { text: `工具 ${name} 没有执行：${res.error ?? '未知原因'}`, failed: true };
         }
@@ -825,13 +874,17 @@ export class AstrbotWorld implements World {
         // 显式 conv_id 也不能绕过 World 边界；桌宠/控制台请用 pet_say 或直接回复。
         const qqTurn = this.qqTurnActive();
         if (!qqTurn) {
-          this.host?.log.warn('QQ 出口被拒：这一轮不是 QQ 事件');
-          return {
-            text:
-              '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
-              '桌宠/控制台聊天请用 pet_say 或直接回复。',
-            failed: true,
-          };
+          const why = this.turnMixed
+            ? '这一轮不是 QQ 消息独占：同时有 QQ 和非 QQ 事件，为避免发错，QQ 出口已关闭。'
+            : this.turnExpired()
+              ? '本轮 QQ 消息已过期，QQ 出口已关闭；等 QQ 那边有人说话再回。'
+              : '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
+                '桌宠/控制台聊天请用 pet_say 或直接回复。';
+          this.host?.log.warn('QQ 出口被拒：这一轮不是 QQ 事件', {
+            mixed: this.turnMixed,
+            expired: this.turnExpired(),
+          });
+          return { text: why, failed: true };
         }
 
         const driver = this.driver;
@@ -839,7 +892,12 @@ export class AstrbotWorld implements World {
           return { text: '与 AstrBot 桥的连接未建立，消息没有发出。', failed: true };
         }
 
-        const conv = this.pickConv(args);
+        const picked = this.pickConv(args);
+        if (picked.error) {
+          this.host?.log.warn('QQ 出口被拒：会话参数不合法', { error: picked.error });
+          return { text: picked.error, failed: true };
+        }
+        const conv = picked.conv;
         if (!conv) {
           return {
             text: this.turnMultiConv
@@ -871,15 +929,20 @@ export class AstrbotWorld implements World {
         }
 
         const replyTo = typeof args.reply_to === 'string' && args.reply_to !== '' ? args.reply_to : undefined;
+        this.touchTurn();
         const result = await driver.send(conv, text, replyTo, image, voice);
+        // 发送本身耗时不该把这一轮挤到过期；开始时就 active 才续期。
+        if (qqTurn) this.turnChannelAt = Date.now();
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
         if (!result.ok) {
-          const reason = result.error ?? '未知原因';
+          // T-004：桥把中文说明放 note、稳定错误码放 error；优先说人话，code 附在括号里。
+          const reason = result.note || result.error || '未知原因';
+          const code = result.note && result.error && result.error !== result.note ? `（${result.error}）` : '';
           const lead = result.uncertain ? '没有确认发出' : '没有发出';
           const hint = result.uncertain
             ? '；这条可能已经发出，先确认再决定要不要重试，不要直接重发'
             : '';
-          return { text: `${lead}：${reason}${hint}`, failed: true };
+          return { text: `${lead}：${reason}${code}${hint}`, failed: true };
         }
         const what = result.voice
           ? image
@@ -894,34 +957,59 @@ export class AstrbotWorld implements World {
     };
   }
 
-  /** 工具参数里的会话；发送只认当前轮，历史允许回退 lastConv。 */
+  /**
+   * 工具参数里的会话；发送只认当前轮，历史允许回退 lastConv。
+   * `conv_id` 接受字符串或数字（数字不能转成字符串丢掉精度）；其他类型明确失败。
+   * 返回错误而不是抛错，两个调用点的失败文案不同。
+   */
   private pickConv(
     args: Record<string, unknown>,
     opts: { allowLast?: boolean } = {},
-  ): Conv | undefined {
+  ): { conv?: Conv; error?: string } {
     const idArg = args.conv_id;
-    if (typeof idArg === 'string' && idArg.trim() !== '') {
+    let id = '';
+    if (typeof idArg === 'string') {
+      id = idArg.trim();
+    } else if (typeof idArg === 'number') {
+      if (!Number.isFinite(idArg)) return { error: 'conv_id 必须是字符串或数字，未发送。' };
+      id = String(idArg);
+    } else if (idArg !== undefined && idArg !== null) {
+      return { error: 'conv_id 必须是字符串或数字，未发送。' };
+    }
+
+    if (id !== '') {
+      const kindArg = args.conv_kind;
+      if (
+        kindArg !== undefined &&
+        kindArg !== null &&
+        kindArg !== '' &&
+        kindArg !== 'group' &&
+        kindArg !== 'private'
+      ) {
+        return { error: `conv_kind 只能是 group 或 private，收到 ${String(kindArg)}，未发送。` };
+      }
       const fallbackKind = this.turnConv?.kind ?? this.lastConv?.kind ?? 'group';
       const kind =
-        args.conv_kind === 'private' ? 'private' : args.conv_kind === 'group' ? 'group' : fallbackKind;
-      const id = idArg.trim();
+        kindArg === 'private' ? 'private' : kindArg === 'group' ? 'group' : fallbackKind;
       // 桥已改成单通道：显式目标必须能补上 UMO，否则这一帧会被拒。
       const known = [...this.convs.values()].find(
         (c) => c.kind === kind && c.id === id && !!c.umo,
       );
-      return known ? { ...known, kind, id } : { kind, id };
+      return { conv: known ? { ...known, kind, id } : { kind, id } };
     }
+
     const replyTo = args.reply_to;
     if (typeof replyTo === 'string' && replyTo.trim() !== '') {
       const key = replyTo.trim().replace(/^#/, '');
       const hit = this.knownMsgConv.get(key);
-      if (hit) return hit;
+      if (hit) return { conv: hit };
     }
     // 同一批里既有私聊又有群：隐式目标会猜错，发送必须显式指定。
-    if (this.turnMultiConv && !opts.allowLast) return undefined;
+    if (this.turnMultiConv && !opts.allowLast) return {};
     // 这一轮有 QQ 消息就以这一轮的会话为准；没有就拒绝，不回退 lastConv。
-    if (this.qqTurnActive() && this.turnConv) return this.turnConv;
-    return opts.allowLast ? this.lastConv : undefined;
+    if (this.qqTurnActive() && this.turnConv) return { conv: this.turnConv };
+    const last = opts.allowLast ? this.lastConv : undefined;
+    return last ? { conv: last } : {};
   }
 
   /** 记下「这个会话、这条消息可以发图到什么时候」；顺手清掉过期项。 */
@@ -961,7 +1049,11 @@ export class AstrbotWorld implements World {
         const host = this.host;
         if (!host) return { text: '这个 World 还没启动，读不到历史。', failed: true };
 
-        const conv = this.pickConv(args, { allowLast: true });
+        const picked = this.pickConv(args, { allowLast: true });
+        if (picked.error) {
+          return { text: picked.error, failed: true };
+        }
+        const conv = picked.conv;
         if (!conv) {
           return { text: '还不知道查哪个会话：没有指定 conv_id，也还没有收到过消息。', failed: true };
         }
@@ -1006,8 +1098,8 @@ export class AstrbotWorld implements World {
           lines.push(`这一轮：${where}，回复用 astrbot_send_message。`);
         } else {
           lines.push(
-            '这一轮：没有投递过 QQ 消息（可能是桌宠事件）。' +
-              '不要用 astrbot_send_message 兜底；确实要发 QQ 时显式给 conv_id 和 conv_kind。',
+            '这一轮：没有投递过 QQ 消息（可能是桌宠事件或 Coo 对话）。' +
+              '不要用 astrbot_send_message 兜底；要发 QQ 先等 QQ 那边有人说话。',
           );
         }
 

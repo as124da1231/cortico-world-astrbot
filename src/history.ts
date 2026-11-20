@@ -42,9 +42,13 @@ function inConv(e: EventEnvelope, conv: Conv): boolean {
 
 const BASE: EventRangeQuery = { source: 'astrbot', origin: 'external' };
 
+/** 一次「读最近消息」最多扫多少条事件。 */
+const MAX_LATEST_SCAN = 20_000;
+
 /**
  * 该会话最近 limit 条，按时间升序。
  * 事件库不按会话过滤，所以从最新往前翻页，凑够或读到头为止。
+ * 扫描有上限：安静会话不会为了几条消息翻遍整库、阻塞主循环。
  */
 export function readLatest(
   store: EventStoreReader,
@@ -54,8 +58,11 @@ export function readLatest(
 ): EventEnvelope[] {
   const picked: EventEnvelope[] = [];
   let toCursor = store.latestCursor();
-  while (picked.length < limit) {
+  let scanned = 0;
+  while (picked.length < limit && toCursor > 0) {
     const page = store.range({ ...BASE, toCursor, limit });
+    if (page.length === 0) break;
+    scanned += page.length;
     for (let i = page.length - 1; i >= 0 && picked.length < limit; i--) {
       const e = page[i]!;
       if (!inConv(e, conv)) continue;
@@ -63,6 +70,8 @@ export function readLatest(
       picked.push(e);
     }
     if (page.length < limit) break;
+    // 到上限就返回已经找到的，剩下的留给下一次；不把主循环卡在冷会话上。
+    if (scanned >= MAX_LATEST_SCAN) break;
     const first = page[0]!.cursor;
     if (first <= 1) break;
     toCursor = first - 1;
