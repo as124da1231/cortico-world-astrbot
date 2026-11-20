@@ -6,11 +6,9 @@ QQ + AstrBot + Coo：不用换 QQ，不用搬 AstrBot 插件，只把「说话�
 
 QQ 里的人继续在群和私聊里说话；AstrBot 继续管账号、插件、工具和语音；Coo 带着自己的性格和记忆进来回复。
 
-群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；在 Coo 对话里填好主人 QQ，也能用同一个身份调用。
+群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；在 Coo 对话里填好主人 QQ（该号还要在 AstrBot 的管理员名单里），也能用同一个身份调用。
 
 **当前版本：1.3.6**
-
-问题解答 QQ：**1136066256**
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
@@ -70,7 +68,7 @@ QQ 账号走的是 OneBot 这类非官方协议，账号有被限制的风险—
 corepack pnpm add cortico-world-astrbot
 ```
 
-装完后在部署的 `config.json` 里把 `worlds.astrbot.enabled` 打开（也可以在 WebUI 的 AstrBot 页里打开），填好 `wsUrl` 与 `token`，重启进程。
+装完先到 **Coo 的 World 页**启用「AstrBot · QQ」——World 面板里没有启用开关，启停只在 World 页。然后打开本 World 的「连接」页，填好 `wsUrl` 与 `token`，保存，再按页面提示重启 World。
 
 ## 它做什么
 
@@ -78,12 +76,13 @@ corepack pnpm add cortico-world-astrbot
   `【QQ群 测试群 18:52】#消息号 昵称(QQ:123)：正文`、`【QQ私聊 18:52】…`。
   图片取不到时写成 `[图片|没取到：原因]`，不让模型猜。
 - 提供 `astrbot_send_message`，让 bot 能把话（文字、图片或语音）发回群里；`voice: true` 会请桥用 TTS 合成，桥没开或失败时自动退回文字。
-- 这一轮没有投递过 QQ 事件时，`astrbot_send_message` 不带 `conv_id` 会被拒绝——桌宠轮次不会误把话发进 QQ。显式给 `conv_id` 仍可主动发到 QQ（前提是桥见过这个会话）。
-- 工具也只在 QQ 轮次可用：桌宠轮次没有 QQ 身份，`astrbot_call_tool` 会被拒绝。默认回复用「这一轮」的会话，通知或被过滤掉的群消息不会把默认目标带跑。
+- **只有当前这一轮是 QQ 轮次时才能发**。不给 `conv_id` 就发回这一轮所在的会话；给 `conv_id` 也只是在这一轮里换目标，必须选桥已经见过、带 UMO 的会话。桌宠、Coo 对话等非 QQ 轮次一律拒绝，显式 `conv_id` 不能绕过。
+- 工具也是两条身份路径：QQ 轮次用「触发这一轮的那条消息」的发言者身份，普通群友的管理员工具会被拒绝；Coo 对话轮次只有在「连接」里填了主人 QQ、且这个号在 AstrBot 管理员名单里时，才以该主人身份执行。混合批次（QQ + 桌宠/控制台）或超过 2 分钟的旧 QQ 轮次不会借主人身份。失败时如实显示中文原因，不假装成功。
+- 纯 QQ 通知（撤回、戳一戳、入退群）只作为上下文，不建立 QQ 轮次；`[QQ 人消息 + 工具清单通知]` 这种同批也不算 mixed，仍然可以正常回复。`turnMsgId` 为空（只有通知）时拒绝发消息和调工具。
 - 提供 `astrbot_status`，查连接状态、这一轮是不是 QQ 轮次、语音是否可用、见过的会话。
 - 提供 `astrbot_read_history`，按关键词或发送者回查自己见过的 QQ 消息。
 - 把撤回、戳一戳、入退群、管理员变更、传文件这类通知译成人话，当作上下文记下（不单独唤醒 bot）。
-- 桥断了自动按指数退避重连；桥每 20 秒发一次应用层心跳，120 秒没有任何往来才重建连接。
+- 桥断了自动按指数退避重连；`open` 只代表 socket 通了，收到 `ready` 才算就绪。token 或版本不对被桥拒绝时，退避至少从 10 秒起步，不会每秒重连刷日志。桥每 20 秒发一次应用层心跳，120 秒没有任何往来才重建连接。
 
 ## 渠道
 
@@ -105,40 +104,58 @@ corepack pnpm add cortico-world-astrbot
 
 ## 配置
 
-全部在部署的 `config.json` 的 `worlds.astrbot` 段，也可以在 WebUI 的 AstrBot 页里改。
+全部在部署的 `config.json` 的 `worlds.astrbot` 段，也可以在 Coo 的「连接」页里改。
 
-| 键 | 说明 |
-|---|---|
-| `enabled` | 挂载开关，默认关闭 |
-| `wsUrl` | 桥的地址，如 `ws://<服务器IP>:17999`。空串表示还没配置 |
-| `token` | 与桥一致的校验 token，留空表示不校验 |
-| `reconnectBaseMs` / `reconnectMaxMs` | 重连退避的起点与封顶 |
-| `channelHint` | 在需要回复的 QQ 消息（@、带图、私聊）后加一行「用 astrbot_send_message 回」的提醒，默认开 |
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `enabled` | `false` | 挂载开关。**启停只在 Coo 的 World 页**，面板里没有这个开关 |
+| `wsUrl` | 空 | 桥的地址，如 `ws://127.0.0.1:17999`。空串表示还没配置 |
+| `token` | 空 | 与桥一致的校验 token；两边都留空表示不校验 |
+| `includeTime` | `true` | 投递给 Coo 的消息行首带 `HH:MM` |
+| `channelHint` | `true` | 在需要回复的 QQ 消息（@、带图、私聊）后加一行「用 astrbot_send_message 回」的提醒 |
+| `reconnectBaseMs` | `1000` | 断线后第一次重连等待；之后翻倍 |
+| `reconnectMaxMs` | `30000` | 重连等待上限 |
+| `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；必须纯数字、20 位以内，且在该 AstrBot 的 `admins_id` 里。留空表示不借身份 |
 
 群范围、`mention` / `all` 消息范围、称呼和发送频率都由 AstrBot 插件统一控制，World 不再重复配置。
 
-`wsUrl`、`token` 是建立连接时用的，改完要重启本 World 才生效；`channelHint` 热改即生效。
+`wsUrl`、`token`、`reconnect*` 是建立连接时用的，保存后要点「重启 World」才生效；`includeTime`、`channelHint`、`ownerId` 保存后即时生效。
+
+「连接」页的几条行为：
+
+- token 输入框留空表示**保持原值**；要真正删掉，点「清除已存 token」再保存。
+- 另建的 token 必须两边一致；AstrBot 插件那边也要同步清空或改成不校验。
+- 保存期间表单会锁住，避免等待期的修改被刷新覆盖；失败时保留输入，可以直接重试。
+- 主人 QQ 只接受数字、最长 20 位；不在 AstrBot 管理员名单里时，工具调用会失败并说明原因。
 
 ## 桥的协议
 
-一条 WS 连接，JSON 帧。连接建立后客户端先发握手，并自报能力：
+一条 WS 连接，JSON 帧。客户端连上后先自报身份，并声明自己的能力：
 
 ```json
 { "t": "hello", "v": 1, "token": "…", "name": "Cortico",
   "capabilities": { "images": true } }
 ```
 
-`capabilities.images` 表示本端模型能直接读图；为真时桥才附原图，否则自己转成文字。
-这个值由 Cortico 侧按当前端点的多模态能力算出来，只在**每次重连握手时**刷新——中途改了端点设置要等重连（或重启进程）才生效。
+- `v` 必须是 `1`；版本不对桥会以 `4004` 关闭，token 不对是 `4003`，第一帧不是 hello 是 `4002`。
+- token 也可以放在 `Authorization: Bearer …` 头里；两种都出现时必须一致。
+- `capabilities.images` 表示本端模型能直接读图；为真时桥才附原图，否则自己转成文字。这个值由 Cortico 侧按当前端点的多模态能力算出来，只在**每次重连握手时**刷新——中途改了端点设置要等重连（或重启进程）才生效。
 
-桥推给客户端：
+桥在握手后、以及语音/工具配置变化时推 `ready`：
 
 ```json
 { "t": "ready", "v": 1, "channel": "qq",
   "self": { "id": "…", "name": "…" }, "admins": ["42"],
   "tts": { "ready": true, "provider": "edge_tts" } }
+```
 
+`admins` 就是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。**收到 `ready` 之后才算真正就绪**；只 TCP 连上不算。
+
+桥推消息：
+
+```json
 { "t": "msg", "id": "消息id", "ts": "2026-10-26T10:00:00+08:00",
+  "umo": "default:GroupMessage:123456",
   "channel": "qq",
   "conv": { "kind": "group", "id": "123456", "name": "群名" },
   "sender": { "id": "42", "name": "群昵称" },
@@ -148,30 +165,94 @@ corepack pnpm add cortico-world-astrbot
   "image_errors": [{ "index": 0, "reason": "下载超时" }] }
 
 { "t": "msg", "kind": "notice", "id": "", "ref": "被撤回的消息id",
+  "umo": "default:GroupMessage:123456",
   "channel": "qq",
   "conv": { "kind": "group", "id": "123456", "name": "群名" },
   "text": "[撤回] 小明 撤回了一条消息", "mentioned": false }
-
-{ "t": "tick", "ts": 1761568800.0 }
-
-{ "t": "notice", "kind": "qq-offline", "text": "QQ 侧已掉线" }
-
-{ "t": "ack", "rid": "a-1", "ok": true }
 ```
 
-`admins` 就是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。
+`umo` 是权威会话键，`conv` 只是它的投影；两者不一致时按 UMO 处理并记一条警告。非法 UMO 不会把整条通知丢掉，会回退到 `conv` 记账，但这样的会话没有 UMO，不能作为发送目标。
+
+桥推工具清单（握手后、以及配置变化时）：
+
+```json
+{ "t": "tools", "items": [
+  { "name": "get_weather", "risk": "read", "desc": "…", "sig": "city" }
+] }
+```
+
+`risk` 是 `read` / `write` / `exec`，`sig` 是参数签名；World 只把它们拼进提示词，不注册成原生工具。
+
+应用层心跳与发消息回执：
+
+```json
+{ "t": "tick", "ts": 1761568800.0 }
+
+{ "t": "ack", "rid": "a-1", "ok": true, "voice": false, "note": "…" }
+{ "t": "ack", "rid": "a-2", "ok": false, "error": "send_failed",
+  "note": "发送失败，详情见插件日志", "uncertain": true }
+```
+
+- `ack.ok` 只表示桥确认的结果；`voice` 表示实际是否按语音发出。
+- 失败时 `error` 是稳定英文 code，`note` 是给人看的中文说明；World 优先显示 `note`，有额外 code 时附在括号里。
+- `uncertain: true` 表示「可能已经发出」，回执会提醒先确认、不要直接重发。
+- `notice` 帧仍被解析，但**当前桥没有发送点**；工具清单变化等状态通过 `astrbot.notice` **事件**进入上下文，不走这个帧。
 
 客户端发给桥：
 
 ```json
 { "t": "send", "rid": "a-1",
+  "umo": "default:GroupMessage:123456",
   "conv": { "kind": "group", "id": "123456" },
   "text": "要发的话", "replyTo": "可选的消息id",
   "voice": true,
   "image": { "mime": "image/jpeg", "base64": "…" } }
 ```
 
-`conv.kind` 取 `group` 或 `private`。`mentioned` 由桥判断并如实告知（@ 到了，或正文出现配置的称呼）。`image` 可省略；`text` 与 `image` 至少给一个；`voice: true` 不能和 `image` 同时用。
+- **`umo` 必填**；`conv` 只是投影。World 在发帧前就会检查：当前不是 QQ 轮次、轮次已过期、或显式目标找不到带 UMO 的已知会话，都直接中文拒绝，不发帧。
+- `conv.kind` 取 `group` 或 `private`。`text` 与 `image` 至少给一个；`voice: true` 需要正文，且不能和 `image` 同时用。
+- 发送只允许到桥已经见过的会话；找不到会回「桥还没见过这个会话（没有 UMO）」。
+
+工具调用：
+
+```json
+{ "t": "tool", "rid": "t-1", "name": "get_weather", "args": { "city": "上海" },
+  "turn": "触发这一轮的消息id" }
+
+{ "t": "tool", "rid": "t-2", "name": "get_weather", "args": { "city": "上海" },
+  "turn": "", "actor": { "kind": "owner", "id": "42" } }
+
+{ "t": "tool-ack", "rid": "t-1", "ok": true, "result": "晴，26℃" }
+{ "t": "tool-ack", "rid": "t-2", "ok": false, "error": "tool_failed",
+  "note": "工具执行失败，详情见插件日志" }
+```
+
+`turn` 与 `actor` 只能二选一：QQ 轮次用消息 id，Coo 对话轮次用 owner actor（`id` 必须在 `admins_id` 里）。两个都没有、同时都有、或 actor 形状不对，桥会在执行前直接拒绝。
+
+发送错误码（`ack.error`）：
+
+| code | 含义 |
+|---|---|
+| `missing_umo` | 帧里没有 `umo`，单通道拒绝 |
+| `invalid_umo` | UMO 格式不合法 |
+| `unknown_umo` | 桥没见过这个 UMO，或超过 30 天 |
+| `umo_conv_mismatch` | `umo` 与 `conv` 指向不同会话 |
+| `bad_session` | `conv.kind` / `conv.id` 不合法 |
+| `empty_message` | 正文和图片都为空 |
+| `voice_needs_text` | 语音没有正文 |
+| `voice_image_conflict` | 语音和图片同条 |
+| `bad_image` / `image_too_large` / `image_bad_type` | 图片字段、大小或 mime 不合法 |
+| `rate_limited` | 超过插件配置的每分钟上限 |
+| `door_closed` | AstrBot 插件未启用，发送门关着 |
+| `send_queue_timeout` | 同会话排队超时，确定没发 |
+| `send_timeout` / `send_failed` | 平台超时或发送层异常，结果可能未知（带 `uncertain`） |
+| `platform_missing` | AstrBot 里找不到对应平台 |
+| `tts_unavailable` | 语音不可用 |
+| `busy` | 并发帧超过上限，本帧没有执行 |
+
+工具错误码（`tool-ack.error`）：`missing_identity`、`ambiguous_identity`、`bad_actor`（桥层拒绝），以及 `tool_failed`（工具本身抛错，原文只进插件日志）。插件还会用中文 `note` 说明：桥未启用、这一轮的消息已过期、没有在 `tools_allow` 里、工具不存在、主人号不在管理员名单、主人事件构造失败等。
+
+World 侧还有自己的本地校验，不会把帧发出去：这一轮不是 QQ 事件、混合批次、QQ 轮次已过期、`conv_id` 不是字符串或数字、显式目标没有 UMO。
 
 ## 开发
 
@@ -180,6 +261,8 @@ corepack pnpm install
 corepack pnpm typecheck
 corepack pnpm test
 ```
+
+当前 Vitest 共 134 个用例（world 120 + driver 14），全部通过。
 
 装进实例验证（在 Cortico 检出根下）：
 

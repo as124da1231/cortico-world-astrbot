@@ -1,6 +1,6 @@
 # UMO v2 设计：从“会话字符串”升级为桥的主承载对象
 
-状态：§3 已实施并部署到测试服（2026-11-19）；§4–§6 未实施。
+状态：§3 注册表 v2 已部分实施（字段比本稿少，见 3.2）；§4–§6 仍是设计稿，未实施。
 范围：`cortico-world-astrbot` + `astrbot_plugin_cortico_bridge`
 
 ---
@@ -90,7 +90,7 @@ interface Umo {
 
 ### 3.2 磁盘格式
 
-`umos.json` v2：
+`umos.json` v2（**当前实际形状**）：
 
 ```json
 {
@@ -99,29 +99,31 @@ interface Umo {
     "default:GroupMessage:123456789": {
       "umo": "default:GroupMessage:123456789",
       "platform": "default",
-      "type": "GroupMessage",
       "kind": "group",
       "id": "123456789",
       "name": "测试群",
-      "firstSeen": "2026-11-19T10:00:00+08:00",
-      "lastSeen": "2026-11-19T20:00:00+08:00",
+      "firstSeen": 1763500000.0,
+      "lastSeen": 1763510000.0,
       "lastMessageId": "528745781",
-      "lastSender": "100000001",
-      "caps": { "screenshot": true },
-      "source": "aiocqhttp"
+      "lastSender": "100000001"
     }
+  },
+  "legacy": {
+    "default|group|123456789": "default:GroupMessage:123456789"
   }
 }
 ```
 
 规则：
 
-- 键是原始 UMO，不再用 `platform|kind|id` 作为主键。
-- `platform|kind|id` → UMO 作为**迁移索引**保留一个版本。
+- 键是原始 UMO，不再用 `platform|kind|id` 作为主键；`legacy` 只做迁移索引。
+- 时间是 **epoch 浮点秒**，不是 ISO 字符串。
+- 当前**没有** `type`、`caps`、`source` 字段；`type` 可由 UMO 派生，截图能力看消息帧的 `can.screenshot`。
 - 原子写、临时文件 + `os.replace`、权限 600。
-- 上限从 200 提到 500；30 天未出现不参与发送，但可保留历史。
+- 上限 500 条；30 天未出现不参与发送，但可保留历史。
 - 发送白名单只认 `lastSeen` 在 TTL 内的条目。
 - 一个 UMO 可以对应多个平台账号；不同平台就是不同 UMO，不合并。
+- v2 空表或坏值不会让插件起不来；旧版 v1 表迁移后备份为 `umos.v1.json`。
 
 ### 3.3 迁移
 
@@ -133,7 +135,9 @@ interface Umo {
 
 ---
 
-## 4. 协议 v1.1
+## 4. 协议 v1.1（设计稿，未实施）
+
+> 当前线上仍是协议 v1：`hello.v = 1`，只有 hello/ready/msg/tick/ack/send/tools/tool/tool-ack。下面带 `v: 2`、`platforms`、`umos`、`umo` 增量帧的设计都**没有实现**。
 
 ### 4.1 握手
 
@@ -209,18 +213,18 @@ interface Umo {
 
 ### 4.4 错误码
 
+设计稿里列过 `umo_not_current` / `umo_stale` / `invalid_conv`，**当前没有实现**。线上实际使用：
+
 ```text
-invalid_umo
-unknown_umo
-umo_conv_mismatch
-umo_not_current
-umo_stale
-invalid_conv
-rate_limited
-not_connected
+发送参数   missing_umo / invalid_umo / unknown_umo / umo_conv_mismatch
+           bad_session / empty_message / voice_needs_text / voice_image_conflict
+           bad_image / image_too_large / image_bad_type
+发送执行   rate_limited / door_closed / send_queue_timeout / send_timeout
+           send_failed / platform_missing / tts_unavailable / busy
+工具       missing_identity / ambiguous_identity / bad_actor / tool_failed
 ```
 
-`ack.error` 用 code；`ack.note` 放中文说明。旧客户端只读 `error` 字符串也能看到 code。
+`ack.error` / `tool-ack.error` 只放上面这些稳定 code；`ack.note` / `tool-ack.note` 放中文说明。旧客户端只读 `error` 字符串也能看到 code。完整表见 `docs/umo-bridge-contract.md` §6.4。
 
 ---
 
@@ -228,52 +232,54 @@ not_connected
 
 这是这次升级的核心。
 
-### 5.1 currentUmo
+### 5.1 当前轮次的现状
 
-World 维护：
+设计稿想用一个 `currentUmo` 值对象；**当前代码没有它**，用的是：
 
 ```ts
-private currentUmo?: Umo;
-private currentMessageId = '';
-private currentSender?: string;
-private currentCapabilities = { screenshot: false };
+private turnChannel?: 'qq';
+private turnConv?: Conv;
+private turnMsgId = '';
+private turnMixed = false;
+private turnMultiConv = false;
+private turnChannelAt = 0;
 ```
 
-来源：
+来源与生命周期：
 
-- `onEventsSettled` 只接受 `astrbot.message` 中的人话事件；
-- 设置 `currentUmo`、`currentMessageId`、`currentCapabilities`；
-- `onTurnEnded` / `onRunPhase('idle')` 清空；
-- 不再用 30 分钟/2 分钟时间窗口作为授权依据。
+- `onEventsSettled` 只接受 `astrbot.message` 中的人话事件；纯通知不建立轮次。
+- 只有 `astrbot.*` 通知不改变上一轮；纯桌宠/控制台才清空。
+- `onTurnEnded` / `onRunPhase('idle')` 清空；`turnChannelAt` 是 2 分钟兜底 TTL，长工具链用 `touchTurn()` 续期。
+- 过期轮次不借主人身份，也不复活。
 
 ### 5.2 工具
 
+当前实现没有 `astrbot_draft` / `astrbot_confirm`，也没有 `umo` 参数；工具参数是 `conv_kind` / `conv_id` / `reply_to`。
+
 - `astrbot_send_message`
-  - `umo` 必填；
-  - 必须等于 `currentUmo`；
-  - 不允许 `lastConv` 回退；
-  - 直接发送。
-- `astrbot_draft` + `astrbot_confirm`
-  - 用于**非当前轮次/主动跨会话**发送；
-  - `umo` 必填且在注册表；
-  - 先 draft，再 confirm=send/cancel；
-  - 参考内置 `qq` World 的 `qq_draft`/`qq_confirm`。
+  - 只允许当前 QQ 轮次；桌宠/控制台、mixed、过期一律拒绝；
+  - 不传目标就发回这一轮；
+  - 传了 `conv_id` 也必须能找到带 UMO 的已知会话，否则本地拒绝；
+  - `conv_id` 接受字符串或数字，其他类型明确失败。
 - `astrbot_read_history`
-  - `umo` 可选，默认 `currentUmo`；
-  - 只读当前 UMO 的历史。
-- `astrbot_call_tool` / 截图等
-  - 显式 `umo` 或默认 current；
-  - 不再用裸 `conv_id` 猜。
+  - 默认当前轮；允许回退 `lastConv`（只读）；
+  - 单次扫描有上限，安静会话不会扫全库。
+- `astrbot_call_tool`
+  - QQ 轮次传 `turn`（这一轮的消息 id）；
+  - Coo 对话轮次传 `actor: {kind:'owner', id: ownerId}`；
+  - 与 5.3 的桌宠边界一致。
 
 ### 5.3 桌宠/控制台
 
-- `astrbot_*` 工具只在当前轮次是 AstrBot 事件时可用。
+- `astrbot_send_message` 不允许从桌宠/控制台轮次调用，显式 `conv_id` 也不能绕过。
 - desktop-pet 用 `pet_say`/`pet_ask`；console 用 assistant 文本。
-- 不允许 `astrbot_send_message` 从桌宠/控制台轮次调用。
+- `astrbot_call_tool` 在 Coo 对话轮次可以走 owner actor，前提是连接页填了主人 QQ 且该号在 AstrBot 管理员名单里。
 
 ---
 
-## 6. 配置与 UI
+## 6. 配置与 UI（未实施）
+
+> 当前插件已有 `bridge_platforms`、群/私聊策略和工具/语音页；下面的 `umos` 覆盖表、UMO 归一化保存、面板过期标记都还没有做。
 
 ### 6.1 配置
 
@@ -302,12 +308,12 @@ private currentCapabilities = { screenshot: false };
 
 ---
 
-## 7. 历史、截图与去重
+## 7. 历史、截图与去重（部分实施）
 
-- 历史：按 UMO 过滤；legacy key 只读。
-- 截图授权：`currentUmo + currentMessageId + until`；不能跨 UMO。
-- 去重：`umo + message_id`；同一消息在 `default`/`default1` 两个平台出现时，按 `bridge_platforms` 只取一个；如果两个都启用，记录 `duplicate_across_platforms` 并只推一次。
-- `lastConv`：只用于 UI 展示，不用于发送授权。
+- 历史：World 按 UMO 优先、legacy key 回退过滤；单次扫描有上限。
+- 截图授权：绑定当前轮次最后一条人话消息 id + 会话 + 2 分钟有效期；不能跨会话。
+- 去重：`umo + message_id` 层面的跨平台去重**未实施**；当前靠 `bridge_platforms` 只接管一个平台来避免重复。
+- `lastConv`：只用于 UI 展示和历史只读查询，不用于发送授权。
 
 ---
 
@@ -322,19 +328,19 @@ private currentCapabilities = { screenshot: false };
 | 边界 | watch list | 注册表 + platform + current turn |
 | 审核 | 发送前确认 | 主动发送确认；当前回复不确认 |
 
-结论：**当前回复直发，主动发送 draft/confirm**。不把两步确认强加到每条聊天回复。
+结论（设计）：**当前回复直发，主动发送 draft/confirm**。不把两步确认强加到每条聊天回复。当前版本还没有 draft/confirm，所以非 QQ 轮次直接拒绝发送。
 
 ---
 
-## 9. 实施阶段
+## 9. 实施阶段（实际进度）
 
-1. **契约与类型**：UMO 值对象、共享向量、协议 v1.1 文档。
-2. **注册表 v2**：磁盘迁移、TTL、原子写、UI 快照。
-3. **World currentUmo**：onEventsSettled/onTurnEnded/onRunPhase；工具显式 UMO。
-4. **工具拆分**：`astrbot_send_message` 当前轮直发；`astrbot_draft`/`astrbot_confirm` 主动发送。
-5. **协议增量**：ready.umos、umo upsert/remove、错误码。
-6. **UI**：最近会话、过期标记、归一化保存。
-7. **兼容与验证**：旧帧、旧注册表、旧配置；QQ/私聊/群聊/桌宠/控制台实机。
+1. ~~契约与类型~~：已采用协议 v1 与 UMO 字符串；v2 值对象/协议 v1.1 未做。
+2. **注册表 v2**：已做磁盘迁移、TTL、原子写；`ready.umos` 快照未做。
+3. **World 当前轮次**：已做 `turnConv` / `turnMsgId` / `turnMixed` / TTL；`currentUmo` 值对象未做。
+4. **工具拆分**：未做；仍只有 `astrbot_send_message`，没有 draft/confirm。
+5. **协议增量**：未做；没有 ready.umos / umo upsert。
+6. **UI**：部分；插件有会话列表，World 只展示 id，没有过期标记/归一化保存。
+7. **兼容与验证**：旧帧只读兼容、旧注册表迁移已测；QQ/私聊/群聊/桌宠/控制台有单测与手工验收。
 
 ---
 

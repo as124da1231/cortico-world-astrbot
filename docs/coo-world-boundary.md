@@ -1,4 +1,4 @@
-# Coo World 接入边界（2026-11-19）
+# Coo World 接入边界
 
 ## 目标
 
@@ -16,37 +16,23 @@
 ### astrbot
 
 - 事件：只接收 `bridge_platforms` 里的平台（默认 `default`）；`webchat`、`console`、`default1` 不推、不 `stop_event`。
-- 工具：`astrbot_send_message` 只允许当前 QQ 轮次；显式 `conv_id` 不能绕过。
-- 上一轮 QQ 轮次在 `idle` 或 `onTurnEnded` 清空，超时上限 2 分钟。
+- 发送：`astrbot_send_message` 只允许当前 QQ 轮次；显式 `conv_id` 不能绕过，且目标必须是桥见过、带 UMO 的会话。
+- 工具：QQ 轮次用触发消息的发言者身份；Coo 对话轮次只有在连接页填了主人 QQ、且该号在 AstrBot `admins_id` 里时才以 owner 执行。mixed 或过期的 QQ 轮次不借主人身份。
+- 轮次生命周期：`idle` 或 `onTurnEnded` 清空；纯 QQ 通知不建立轮次；2 分钟 TTL 只作兜底，长工具链会续期。
 
 ### console / webchat
 
 - 属于 AstrBot 自己的对话页，不经过 `astrbot` 桥。
 - 桥只处理 UMO 第一段在 `bridge_platforms` 中的事件。
 
-## 事故与修复
+## 当前行为摘要
 
-2026-11-19 19:03–19:29，用户在 desktop-pet 对话页连续发消息。Coo 收到事件，但：
-
-- `pet_say` 因桌宠窗口未连接直接返回失败，且没有写入对话页；
-- 模型随后用 `astrbot_send_message` 显式 `conv_id` 发到 QQ 私聊；
-- 对话页因此没有回复。
-
-修复：
-
-1. `cortico-world-desktop-pet/src/world.ts`：`pet_say` 先 `record` 再 `sendPet`；窗口未连接时返回成功并标注“已保存到对话页”。
-2. `cortico-world-astrbot/src/world.ts`：移除显式 `conv_id` 绕过；只有 `qqTurnActive()` 才允许 QQ 出口；TTL 2 分钟；`onRunPhase('idle')` 清空轮次。
-3. AstrBot 插件：增加 `bridge_platforms`，默认 `default`；`webchat` / `default1` 不再被桥接管。
-
-## 验证
-
-- `cortico-world-astrbot`：`pnpm typecheck` 通过，Vitest 86/86。
-- `cortico-world-astrbot`：`describe:extension` + `check:extension` 通过。
-- `cortico-world-desktop-pet`：`check:extension` 通过（内置包没有可运行的 package test 脚本）。
-- 真实实例：`desktop-pet.message` 20:06:46 → `desktop-pet.self kind=say` 20:07:09；未再出现 `astrbot_send_message` 发往 QQ。
-- AstrBot 桥：`connected=True`；平台边界测试 `webchat=False`、`default=True`、`default1=False`。
+- 桌宠轮次调用 `astrbot_send_message` 会被拒绝并返回中文原因；不会把对话页的回复发到 QQ。
+- 桌宠/控制台轮次要调 AstrBot 工具，必须先在「连接」页填主人 QQ（且是管理员）；否则明确拒绝。
+- 桥断开时，范围内的 QQ 通知仍会进入事件流，但不唤醒 bot。
+- 事件行始终带渠道前缀：`【QQ群 …】` / `【QQ私聊 …】`，桌宠事件是 `[touch]` / `[typed]` / `[voice]`。
 
 ## 已知限制
 
 - `cortico-world-desktop-pet` 是 Coopanion 安装目录里的内置包，不是当前 git 工作区；本机补丁在 Coopanion 更新时可能被覆盖，长期应回到 Coopanion 源码包。
-- `check:extension` 仍报告 `injection-risk` / `unofficial-api` 等既有警告；本次未改变相应事件来源和协议。
+- `cortico-world-astrbot` 不能把 `pet_say` 从工具表里移除；要彻底隔离 QQ 轮次，需给 QQ 单独建只启用 AstrBot World 的会话/人格。
