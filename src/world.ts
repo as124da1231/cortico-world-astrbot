@@ -212,6 +212,10 @@ export class AstrbotWorld implements World {
   private turnChannel?: 'qq';
   /** 同一批里既有 QQ 又有桌宠/其他渠道：QQ 出口关闭，宁可不发也不发错。 */
   private turnMixed = false;
+  /** 同一批里出现多个 QQ 会话（比如私聊 + 群）：隐式发送会猜错，必须显式指定。 */
+  private turnMultiConv = false;
+  /** 最近见过的消息 id → 会话；reply_to 用它解析目标。 */
+  private knownMsgConv = new Map<string, Conv>();
   /** 置位时刻；作为 onTurnEnded 万一没来时的兜底。 */
   private turnChannelAt = 0;
   /** 这一轮最后投递的 QQ 会话；状态工具用。 */
@@ -421,6 +425,7 @@ export class AstrbotWorld implements World {
     this.turnConv = undefined;
     this.turnMsgId = '';
     this.turnMixed = false;
+    this.turnMultiConv = false;
     if (driver) await driver.stop();
   }
 
@@ -446,6 +451,20 @@ export class AstrbotWorld implements World {
     const qq = messages.filter((e) => e.type === 'astrbot.message');
     const others = messages.filter((e) => e.type !== 'astrbot.message');
     this.turnMixed = qq.length > 0 && others.length > 0;
+    const human = qq.filter((e) => {
+      const meta = e.meta as { notice?: boolean } | undefined;
+      return meta?.notice !== true;
+    });
+    // 只有「人话」跨会话才算歧义；通知不该把回复目标带到别的群。
+    const convKeys = new Set(
+      human
+        .map((e) => {
+          const conv = (e.meta as { conv?: Conv } | undefined)?.conv;
+          return conv ? conv.umo || `${conv.kind}:${conv.id}` : '';
+        })
+        .filter((key) => key !== ''),
+    );
+    this.turnMultiConv = convKeys.size > 1;
 
     if (qq.length === 0) {
       // 最新一批没有 QQ：上一轮的 QQ 出口立刻关掉。
@@ -456,10 +475,6 @@ export class AstrbotWorld implements World {
     }
 
     const last = qq[qq.length - 1]!;
-    const human = qq.filter((e) => {
-      const meta = e.meta as { notice?: boolean } | undefined;
-      return meta?.notice !== true;
-    });
     const lastHuman = human[human.length - 1];
     const first = this.turnChannel !== 'qq';
     this.turnChannel = 'qq';
@@ -489,6 +504,7 @@ export class AstrbotWorld implements World {
     this.turnConv = undefined;
     this.turnMsgId = '';
     this.turnMixed = false;
+    this.turnMultiConv = false;
   }
 
   /** 运行阶段回到 idle 时也清掉 QQ 轮次，避免桌宠/控制台复用上一轮 QQ 工具。 */
@@ -498,6 +514,7 @@ export class AstrbotWorld implements World {
     this.turnConv = undefined;
     this.turnMsgId = '';
     this.turnMixed = false;
+    this.turnMultiConv = false;
   }
 
   /** 这一轮是不是 QQ 轮次；onTurnEnded 万一没来，30 分钟后自动失效。 */
@@ -530,6 +547,14 @@ export class AstrbotWorld implements World {
       });
     }
     this.rememberConv(msg.conv);
+    if (msg.id) {
+      this.knownMsgConv.set(String(msg.id), msg.conv);
+      while (this.knownMsgConv.size > 200) {
+        const oldest = this.knownMsgConv.keys().next().value;
+        if (oldest === undefined) break;
+        this.knownMsgConv.delete(oldest);
+      }
+    }
     const isPrivate = msg.conv.kind === 'private';
     const isNotice = msg.notice === true;
     // 管理员（= 主人）说话才给发图授权；别人一说话就撤销，不给顶替的机会。
@@ -761,7 +786,12 @@ export class AstrbotWorld implements World {
 
         const conv = this.pickConv(args);
         if (!conv) {
-          return { text: '还不知道发到哪个会话：没有指定 conv_id，也还没有收到过消息。', failed: true };
+          return {
+            text: this.turnMultiConv
+              ? '这一轮有多个 QQ 会话（私聊和群）。请用 conv_id 或 reply_to 指定回哪个，不要猜。'
+              : '还不知道发到哪个会话：没有指定 conv_id，也还没有收到过消息。',
+            failed: true,
+          };
         }
 
         let image: OutgoingImage | undefined;
@@ -826,6 +856,14 @@ export class AstrbotWorld implements World {
       );
       return known ? { ...known, kind, id } : { kind, id };
     }
+    const replyTo = args.reply_to;
+    if (typeof replyTo === 'string' && replyTo.trim() !== '') {
+      const key = replyTo.trim().replace(/^#/, '');
+      const hit = this.knownMsgConv.get(key);
+      if (hit) return hit;
+    }
+    // 同一批里既有私聊又有群：隐式目标会猜错，发送必须显式指定。
+    if (this.turnMultiConv && !opts.allowLast) return undefined;
     // 这一轮有 QQ 消息就以这一轮的会话为准；没有就拒绝，不回退 lastConv。
     if (this.qqTurnActive() && this.turnConv) return this.turnConv;
     return opts.allowLast ? this.lastConv : undefined;

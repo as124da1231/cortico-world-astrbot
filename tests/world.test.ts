@@ -425,6 +425,71 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
   });
 
+  it('同一批有私聊和群时，不指定目标不发 QQ', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage({
+      id: 'm-p',
+      umo: 'default:FriendMessage:999',
+      conv: { kind: 'private', id: '999', umo: 'default:FriendMessage:999' },
+      sender: { id: '999', name: '我' },
+      text: '私聊里问',
+      mentioned: true,
+      owner: true,
+    });
+    driver.emitMessage({
+      id: 'm-g',
+      umo: 'default:GroupMessage:123456',
+      conv: { kind: 'group', id: '123456', name: '群', umo: 'default:GroupMessage:123456' },
+      sender: { id: '42', name: '群友' },
+      text: '群里说话',
+      mentioned: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    settle(world, host);
+
+    const out = await handlerOf(world, 'astrbot_send_message')({ text: '回谁？' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('多个 QQ 会话');
+  });
+
+  it('多会话轮次里，conv_id 和 reply_to 都能指定目标', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage({
+      id: 'm-p',
+      umo: 'default:FriendMessage:999',
+      conv: { kind: 'private', id: '999', umo: 'default:FriendMessage:999' },
+      sender: { id: '999', name: '我' },
+      text: '私聊里问',
+      mentioned: true,
+      owner: true,
+    });
+    driver.emitMessage({
+      id: 'm-g',
+      umo: 'default:GroupMessage:123456',
+      conv: { kind: 'group', id: '123456', name: '群', umo: 'default:GroupMessage:123456' },
+      sender: { id: '42', name: '群友' },
+      text: '群里说话',
+      mentioned: true,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    settle(world, host);
+
+    await handlerOf(world, 'astrbot_send_message')(
+      { text: '回私聊', conv_kind: 'private', conv_id: '999' },
+      toolCtx(),
+    );
+    await handlerOf(world, 'astrbot_send_message')(
+      { text: '回私聊', reply_to: 'm-p' },
+      toolCtx(),
+    );
+
+    expect(driver.sent).toHaveLength(2);
+    expect(driver.sent[0]?.conv).toMatchObject({ kind: 'private', id: '999' });
+    expect(driver.sent[1]?.conv).toMatchObject({ kind: 'private', id: '999' });
+  });
+
   it('桌宠在前、QQ 在后也算混合，不发 QQ', async () => {
     const { driver, world } = await mount({ mode: 'all' });
     world.onEventsSettled([desktopEvent, qqEvent], 'delivered');
