@@ -2,8 +2,11 @@
 
 <img src="./assets/icon.png" width="88" alt="AstrBot · QQ" align="right">
 
-让 Cortico 的人格 Bot 进 QQ 群和私聊说话。账号、群/私聊范围、工具和语音继续归 AstrBot；人格、记忆和回复归 Cortico，两边用一条 WebSocket 桥连接。  
-*Let a Cortico persona talk in QQ groups and private chats. AstrBot keeps the account, group/private policies, tools and voice; Cortico owns the persona, memory and replies, connected over a WebSocket bridge.*
+让 Coo 用自己的性格和记忆，住进你的 QQ。
+
+群聊、私聊、@ 或全部消息都能接；图片、语音转写、TTS、撤回和戳一戳都已支持。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；在 Coo 对话里填好主人 QQ，也能用同一个身份调用。
+
+账号、群/私聊范围、工具和语音仍归 AstrBot，现有插件不用换；性格、记忆和回复归 Coo。
 
 **当前版本：1.3.6**
 
