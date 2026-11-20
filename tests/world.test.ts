@@ -386,6 +386,75 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
   });
 
+  const desktopEvent = {
+    type: 'desktop-pet.message',
+    origin: 'external',
+    source: 'desktop-pet',
+    text: '桌宠消息',
+    meta: {},
+  } as unknown as import('cortico/core/types.ts').EventEnvelope;
+
+  const qqEvent = {
+    type: 'astrbot.message',
+    origin: 'external',
+    source: 'astrbot',
+    text: 'QQ 消息',
+    meta: {
+      conv: { kind: 'group', id: '123456' },
+      message_id: 'm-qq',
+    },
+  } as unknown as import('cortico/core/types.ts').EventEnvelope;
+
+  it('同一批里同时有 QQ 和桌宠消息时，QQ 出口关闭', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([qqEvent, desktopEvent], 'delivered');
+    const out = await handlerOf(world, 'astrbot_send_message')({ text: '你好' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
+  });
+
+  it('上一轮 QQ 之后只来桌宠消息，QQ 出口立刻关闭', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg());
+    await Promise.resolve();
+    settle(world, host);
+    world.onEventsSettled([desktopEvent], 'delivered');
+
+    const out = await handlerOf(world, 'astrbot_send_message')({ text: '桌宠里说的话' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
+  });
+
+  it('桌宠在前、QQ 在后也算混合，不发 QQ', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([desktopEvent, qqEvent], 'delivered');
+    const out = await handlerOf(world, 'astrbot_send_message')({ text: '你好' }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
+  });
+
+  it('只有 QQ 通知时，仍然可以回到那个会话', async () => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled(
+      [
+        {
+          type: 'astrbot.message',
+          origin: 'external',
+          source: 'astrbot',
+          text: '[撤回]',
+          meta: {
+            notice: true,
+            conv: { kind: 'group', id: '123456' },
+          },
+        } as unknown as import('cortico/core/types.ts').EventEnvelope,
+      ],
+      'delivered',
+    );
+    const out = await handlerOf(world, 'astrbot_send_message')({ text: '看到了' }, toolCtx());
+    expect(driver.sent).toHaveLength(1);
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+  });
+
   it('桥拒绝时回执带原因且标失败', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage(groupMsg());

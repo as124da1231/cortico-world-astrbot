@@ -210,6 +210,8 @@ export class AstrbotWorld implements World {
   private turnMsgId = '';
   /** 这一轮有没有投递过 QQ 事件；由 onEventsSettled 置位，onTurnEnded 清掉。 */
   private turnChannel?: 'qq';
+  /** 同一批里既有 QQ 又有桌宠/其他渠道：QQ 出口关闭，宁可不发也不发错。 */
+  private turnMixed = false;
   /** 置位时刻；作为 onTurnEnded 万一没来时的兜底。 */
   private turnChannelAt = 0;
   /** 这一轮最后投递的 QQ 会话；状态工具用。 */
@@ -417,6 +419,8 @@ export class AstrbotWorld implements World {
     this.connected = false;
     this.turnChannel = undefined;
     this.turnConv = undefined;
+    this.turnMsgId = '';
+    this.turnMixed = false;
     if (driver) await driver.stop();
   }
 
@@ -427,23 +431,44 @@ export class AstrbotWorld implements World {
    */
   onEventsSettled(events: readonly EventEnvelope[], outcome: 'delivered' | 'discarded'): void {
     if (outcome !== 'delivered') return;
-    const qq = events.filter((e) => e.type === 'astrbot.message');
-    if (qq.length === 0) return;
 
-    // 通知也算 QQ 事件（撤回/入群可以回应），但它不是人说的话：
-    // 「这一轮」的会话和工具身份只能取人话那一条。
+    // 看「这一批里有什么」，不只盯着 QQ。通知也算 QQ 渠道，但它不是人话：
+    // 会话可以用通知的，工具身份只能取人话那一条。
+    const messages = events.filter((e) => {
+      if (e.origin !== 'external') return false;
+      if (e.type.endsWith('.self')) return false;
+      const meta = e.meta as { kind?: string } | undefined;
+      if (meta?.kind === 'activity') return false;
+      return true;
+    });
+    if (messages.length === 0) return;
+
+    const qq = messages.filter((e) => e.type === 'astrbot.message');
+    const others = messages.filter((e) => e.type !== 'astrbot.message');
+    this.turnMixed = qq.length > 0 && others.length > 0;
+
+    if (qq.length === 0) {
+      // 最新一批没有 QQ：上一轮的 QQ 出口立刻关掉。
+      this.turnChannel = undefined;
+      this.turnConv = undefined;
+      this.turnMsgId = '';
+      return;
+    }
+
+    const last = qq[qq.length - 1]!;
     const human = qq.filter((e) => {
       const meta = e.meta as { notice?: boolean } | undefined;
       return meta?.notice !== true;
     });
-    const last = human[human.length - 1] ?? qq[qq.length - 1]!;
+    const lastHuman = human[human.length - 1];
     const first = this.turnChannel !== 'qq';
     this.turnChannel = 'qq';
     this.turnChannelAt = Date.now();
-    const meta = last.meta as { conv?: Conv } | undefined;
+    // 会话优先取「人话」；只有整批都是通知时，才用通知的会话。
+    const convSource = lastHuman ?? last;
+    const meta = convSource.meta as { conv?: Conv } | undefined;
     if (meta?.conv) this.turnConv = meta.conv;
 
-    const lastHuman = human[human.length - 1];
     this.turnMsgId = lastHuman
       ? String((lastHuman.meta as { message_id?: unknown } | undefined)?.message_id ?? '')
       : '';
@@ -453,6 +478,7 @@ export class AstrbotWorld implements World {
       this.host?.log.info('本轮渠道：QQ', {
         conv: c ? `${c.kind}:${c.id}` : 'unknown',
         events: qq.length,
+        mixed: this.turnMixed,
       });
     }
   }
@@ -462,6 +488,7 @@ export class AstrbotWorld implements World {
     this.turnChannel = undefined;
     this.turnConv = undefined;
     this.turnMsgId = '';
+    this.turnMixed = false;
   }
 
   /** 运行阶段回到 idle 时也清掉 QQ 轮次，避免桌宠/控制台复用上一轮 QQ 工具。 */
@@ -470,10 +497,12 @@ export class AstrbotWorld implements World {
     this.turnChannel = undefined;
     this.turnConv = undefined;
     this.turnMsgId = '';
+    this.turnMixed = false;
   }
 
   /** 这一轮是不是 QQ 轮次；onTurnEnded 万一没来，30 分钟后自动失效。 */
   private qqTurnActive(): boolean {
+    if (this.turnMixed) return false;
     if (this.turnChannel !== 'qq') return false;
     return Date.now() - this.turnChannelAt < 2 * 60_000;
   }
@@ -780,8 +809,11 @@ export class AstrbotWorld implements World {
     };
   }
 
-  /** 工具参数里的会话；不指定就用这一轮 QQ 消息所在的会话。 */
-  private pickConv(args: Record<string, unknown>): Conv | undefined {
+  /** 工具参数里的会话；发送只认当前轮，历史允许回退 lastConv。 */
+  private pickConv(
+    args: Record<string, unknown>,
+    opts: { allowLast?: boolean } = {},
+  ): Conv | undefined {
     const idArg = args.conv_id;
     if (typeof idArg === 'string' && idArg.trim() !== '') {
       const fallbackKind = this.turnConv?.kind ?? this.lastConv?.kind ?? 'group';
@@ -794,9 +826,9 @@ export class AstrbotWorld implements World {
       );
       return known ? { ...known, kind, id } : { kind, id };
     }
-    // 这一轮有 QQ 消息就以这一轮的会话为准；lastConv 只用于桌宠轮次查历史。
+    // 这一轮有 QQ 消息就以这一轮的会话为准；没有就拒绝，不回退 lastConv。
     if (this.qqTurnActive() && this.turnConv) return this.turnConv;
-    return this.lastConv;
+    return opts.allowLast ? this.lastConv : undefined;
   }
 
   /** 记下「这个会话、这条消息可以发图到什么时候」；顺手清掉过期项。 */
@@ -836,7 +868,7 @@ export class AstrbotWorld implements World {
         const host = this.host;
         if (!host) return { text: '这个 World 还没启动，读不到历史。', failed: true };
 
-        const conv = this.pickConv(args);
+        const conv = this.pickConv(args, { allowLast: true });
         if (!conv) {
           return { text: '还不知道查哪个会话：没有指定 conv_id，也还没有收到过消息。', failed: true };
         }
