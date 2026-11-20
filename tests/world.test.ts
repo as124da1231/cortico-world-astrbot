@@ -43,6 +43,17 @@ function groupMsg(patch: Record<string, unknown> = {}) {
   };
 }
 
+/** 一条私聊消息。 */
+function privateMsg(patch: Record<string, unknown> = {}) {
+  return {
+    id: 'p1',
+    conv: { kind: 'private' as const, id: '999' },
+    sender: { id: '999', name: '主人' },
+    text: '在吗',
+    ...patch,
+  };
+}
+
 describe('配置解析', () => {
   it('未知 mode 收敛成保守的 mention', () => {
     expect(normalizeMode('mention')).toBe('mention');
@@ -146,6 +157,38 @@ describe('消息投递：B 全部消息', () => {
 
     expect(host.pushOpts[0]).toEqual({ trigger: 'flush' });
     expect(host.events[0]?.text).toContain('@你');
+  });
+});
+
+describe('消息投递：私聊触发', () => {
+  it('主人私聊立即投递', async () => {
+    const { driver, host } = await mount({ mode: 'all' });
+    driver.emitMessage(privateMsg({ owner: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(host.events).toHaveLength(1);
+    expect(host.pushOpts[0]).toEqual({ trigger: 'flush' });
+  });
+
+  it('非主人私聊合批', async () => {
+    const { driver, host } = await mount({ mode: 'all' });
+    driver.emitMessage(privateMsg({ owner: false }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(host.events).toHaveLength(1);
+    expect(host.pushOpts[0]).toBeUndefined();
+  });
+
+  it('主人在群里没被叫到也合批', async () => {
+    const { driver, host } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ owner: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(host.events).toHaveLength(1);
+    expect(host.pushOpts[0]).toBeUndefined();
   });
 });
 

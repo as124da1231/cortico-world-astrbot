@@ -651,12 +651,16 @@ export class AstrbotWorld implements World {
             ...(msg.imageErrors ? { image_errors: msg.imageErrors } : {}),
           },
         },
-        // 点名立即投递；通知只排队，随下一批走，不单独把 bot 叫醒；其余交给合批。
+        // 主人私聊立即；群只认被叫到；其他私聊和群聊合批；通知只排队。
         isNotice
           ? { trigger: 'piggyback' }
-          : called
-            ? { trigger: 'flush' }
-            : undefined,
+          : isPrivate
+            ? isOwner
+              ? { trigger: 'flush' }
+              : undefined
+            : called
+              ? { trigger: 'flush' }
+              : undefined,
       )
       .catch((err: unknown) => {
         host.log.warn('消息事件投递失败', { error: String(err) });
