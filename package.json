@@ -2,7 +2,7 @@
   "name": "cortico-world-astrbot",
   "version": "1.3.6",
   "type": "module",
-  "description": "让 Cortico 人格进 QQ 群交流，AstrBot 保留插件与账号 / Join QQ conversations through an AstrBot bridge, keeping AstrBot plugins while Cortico persona chats",
+  "description": "让 Cortico 的人格 Bot 进 QQ 群和私聊说话，账号、策略、工具和语音留在 AstrBot / Let a Cortico persona talk in QQ groups and private chats while AstrBot keeps the account, policies, tools and voice",
   "license": "MIT",
   "author": "as124da1231",
   "repository": {
@@ -38,11 +38,11 @@
     "locales": {
       "zh": {
         "displayName": "AstrBot · QQ",
-        "description": "让 Cortico 的人格 Bot 进 QQ 群说话，同时把 QQ 账号与插件能力留在 AstrBot 手里。"
+        "description": "让 Cortico 的人格 Bot 进 QQ 群和私聊说话。账号、群/私聊范围、工具和语音仍归 AstrBot；人格、记忆和回复归 Cortico，两边用一条 WebSocket 桥连接。问题解答 QQ：1136066256。"
       },
       "en": {
         "displayName": "AstrBot · QQ",
-        "description": "Join QQ conversations through an AstrBot bridge, keeping AstrBot's plugins and accounts while a Cortico persona drives the talking."
+        "description": "Let a Cortico persona talk in QQ groups and private chats. AstrBot keeps the account, group/private policies, tools and voice; Cortico owns the persona, memory and replies, connected over a WebSocket bridge. Support QQ: 1136066256."
       }
     },
     "describe": "describe.json",

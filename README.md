@@ -2,10 +2,12 @@
 
 <img src="./assets/icon.png" width="88" alt="AstrBot · QQ" align="right">
 
-让 Cortico 的人格 Bot 进 QQ 群说话，同时把 QQ 账号与插件能力留在 AstrBot 手里。  
-*Join QQ conversations through an AstrBot bridge, keeping AstrBot's plugins while a Cortico persona drives the talking.*
+让 Cortico 的人格 Bot 进 QQ 群和私聊说话。账号、群/私聊范围、工具和语音继续归 AstrBot；人格、记忆和回复归 Cortico，两边用一条 WebSocket 桥连接。  
+*Let a Cortico persona talk in QQ groups and private chats. AstrBot keeps the account, group/private policies, tools and voice; Cortico owns the persona, memory and replies, connected over a WebSocket bridge.*
 
-**当前版本：1.3.5**
+**当前版本：1.3.6**
+
+问题解答 QQ：**1136066256**
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
@@ -184,6 +186,19 @@ corepack pnpm check:extension <本包目录>
 ```
 
 需要 Node 22 以上。
+
+## 问题解答
+
+QQ：**1136066256**
+
+提问时带上这几样，能直接定位：
+
+```text
+两侧版本：cortico-world-astrbot / astrbot_plugin_cortico_bridge
+Coo「连接」页的状态（已连接 / 等待连接 / 未启用）
+AstrBot 插件状态页的「接入安全」和「最近调用」
+报错原文，以及是私聊、群聊还是 Coo 对话里触发的
+```
 
 ## License
 
