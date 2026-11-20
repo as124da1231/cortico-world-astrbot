@@ -394,11 +394,13 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     };
 
     const token = this.opts.token;
+    // HTTP 头只能放可打印 ASCII；自定义的非 ASCII token 走 hello 帧（兼容路径）。
+    const headerToken = token && /^[\x20-\x7e]+$/.test(token) ? token : '';
     const handshakeMs = this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     let ws: WebSocket;
     try {
       ws = new WebSocket(this.opts.wsUrl, {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        headers: headerToken ? { Authorization: `Bearer ${headerToken}` } : undefined,
         // 对端只接受 TCP、不回 101 时，ws 自己不会超时；这里必须给。
         ...(handshakeMs > 0 ? { handshakeTimeout: handshakeMs } : {}),
       });
