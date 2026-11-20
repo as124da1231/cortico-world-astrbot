@@ -892,9 +892,10 @@ export class AstrbotWorld implements World {
           return { text: '与 AstrBot 桥的连接未建立，消息没有发出。', failed: true };
         }
 
-        const picked = this.pickConv(args);
+        // 发送必须是桥见过的会话：没有 UMO 的显式目标先拒绝，别让桥回误导性的 missing_umo。
+        const picked = this.pickConv(args, { requireUmo: true });
         if (picked.error) {
-          this.host?.log.warn('QQ 出口被拒：会话参数不合法', { error: picked.error });
+          this.host?.log.warn('QQ 出口被拒：会话参数不合法或桥没见过该会话', { error: picked.error });
           return { text: picked.error, failed: true };
         }
         const conv = picked.conv;
@@ -960,11 +961,12 @@ export class AstrbotWorld implements World {
   /**
    * 工具参数里的会话；发送只认当前轮，历史允许回退 lastConv。
    * `conv_id` 接受字符串或数字（数字不能转成字符串丢掉精度）；其他类型明确失败。
+   * `requireUmo` 只给发送用：显式目标必须是桥见过的、带 UMO 的会话。
    * 返回错误而不是抛错，两个调用点的失败文案不同。
    */
   private pickConv(
     args: Record<string, unknown>,
-    opts: { allowLast?: boolean } = {},
+    opts: { allowLast?: boolean; requireUmo?: boolean } = {},
   ): { conv?: Conv; error?: string } {
     const idArg = args.conv_id;
     let id = '';
@@ -995,7 +997,12 @@ export class AstrbotWorld implements World {
       const known = [...this.convs.values()].find(
         (c) => c.kind === kind && c.id === id && !!c.umo,
       );
-      return { conv: known ? { ...known, kind, id } : { kind, id } };
+      if (known) return { conv: { ...known, kind, id } };
+      // 发送要求桥真的见过这个会话；历史和已知但没 UMO 的 id 仍按 kind:id 查询。
+      if (opts.requireUmo) {
+        return { error: '桥还没见过这个会话（没有 UMO），先让这个会话发一条消息' };
+      }
+      return { conv: { kind, id } };
     }
 
     const replyTo = args.reply_to;

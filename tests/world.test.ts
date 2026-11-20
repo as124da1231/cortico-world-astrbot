@@ -369,14 +369,17 @@ describe('发消息工具', () => {
 
   it('QQ 轮次里可以显式指定会话', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
-    driver.emitMessage(groupMsg());
+    driver.emitMessage(privateMsg({
+      umo: 'default:FriendMessage:999',
+      conv: { kind: 'private', id: '999', umo: 'default:FriendMessage:999' },
+    }));
     await Promise.resolve();
     settle(world, host);
     await handlerOf(world, 'astrbot_send_message')(
       { text: '你好', conv_kind: 'private', conv_id: '999' },
       toolCtx(),
     );
-    expect(driver.sent[0]?.conv).toEqual({ kind: 'private', id: '999' });
+    expect(driver.sent[0]?.conv).toMatchObject({ kind: 'private', id: '999' });
   });
 
   it('voice=true 会把语音意图传给桥，并按桥的回执说话', async () => {
@@ -607,12 +610,12 @@ describe('发消息工具', () => {
 
   it('桥拒绝时回执带原因且标失败', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
-    driver.emitMessage(groupMsg());
+    driver.emitMessage(groupMsg({ umo: 'default:GroupMessage:123456' }));
     await Promise.resolve();
     settle(world, host);
     driver.sendResult = { ok: false, error: '桥拒绝了' };
     const out = await handlerOf(world, 'astrbot_send_message')(
-      { text: '你好', conv_id: '1' },
+      { text: '你好', conv_id: '123456' },
       toolCtx(),
     );
     expect(typeof out === 'string' ? false : out.failed).toBe(true);
@@ -621,12 +624,12 @@ describe('发消息工具', () => {
 
   it('结果未知时明确提醒可能已发出，不要直接重试', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
-    driver.emitMessage(groupMsg());
+    driver.emitMessage(groupMsg({ umo: 'default:GroupMessage:123456' }));
     await Promise.resolve();
     settle(world, host);
     driver.sendResult = { ok: false, uncertain: true, error: '桥没有确认' };
     const out = await handlerOf(world, 'astrbot_send_message')(
-      { text: '你好', conv_id: '1' },
+      { text: '你好', conv_id: '123456' },
       toolCtx(),
     );
     expect(typeof out === 'string' ? false : out.failed).toBe(true);
@@ -636,12 +639,12 @@ describe('发消息工具', () => {
 
   it('World 不再本地限流，发送频率交给插件', async () => {
     const { driver, host, world } = await mount({ mode: 'all', maxSendsPerMinute: 1 });
-    driver.emitMessage(groupMsg());
+    driver.emitMessage(groupMsg({ umo: 'default:GroupMessage:123456' }));
     await Promise.resolve();
     settle(world, host);
     const send = handlerOf(world, 'astrbot_send_message');
-    const first = await send({ text: 'a', conv_id: '1' }, toolCtx());
-    const second = await send({ text: 'b', conv_id: '1' }, toolCtx());
+    const first = await send({ text: 'a', conv_id: '123456' }, toolCtx());
+    const second = await send({ text: 'b', conv_id: '123456' }, toolCtx());
 
     expect(driver.sent).toHaveLength(2);
     expect(typeof first === 'string' ? true : first.failed ?? false).toBe(false);
@@ -710,7 +713,7 @@ describe('发图', () => {
     const { driver, host, world } = await mount({ mode: 'all' });
     host.blobs.set('log:abc123.jpg', { bytes: jpeg, mime: 'image/jpeg' });
     // 桥没有给 canScreenshot
-    driver.emitMessage(groupMsg());
+    driver.emitMessage(groupMsg({ umo: 'default:GroupMessage:123456' }));
     await Promise.resolve();
     settle(world, host);
 
@@ -1599,6 +1602,62 @@ describe('会话参数：数字 conv_id 与失败回执', () => {
 
     await toolHandler(world, 'astrbot_send_message')({ text: 'x', conv_id: '' }, toolCtx());
     expect(driver.sent[0]?.conv.id).toBe('123456');
+  });
+
+  it('显式 conv_id 不在已知会话里：拒发并说明桥没见过', async () => {
+    const { driver, world } = await twoConvs();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: 'x', conv_id: 999 },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain(
+      '桥还没见过这个会话（没有 UMO），先让这个会话发一条消息',
+    );
+  });
+
+  it('显式 conv_id 命中已知但无 UMO 的会话：拒发，不调用 driver.send', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage({
+      ...groupMsg({ id: 'g3', text: '这个群没带 UMO' }),
+      conv: { kind: 'group', id: '333', name: '丙群' },
+    });
+    await Promise.resolve();
+    settle(world, host);
+
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: 'x', conv_id: 333 },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('桥还没见过这个会话（没有 UMO）');
+  });
+
+  it('显式 conv_id 命中带 UMO 的已知会话：正常发送', async () => {
+    const { driver, world } = await twoConvs();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '回乙群', conv_id: '222' },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv).toMatchObject({ kind: 'group', id: '222' });
+    expect(driver.sent[0]?.conv.umo).toBe('default:GroupMessage:222');
+    expect(typeof out === 'string' ? true : out.failed ?? false).toBe(false);
+  });
+
+  it('历史仍可查没有 UMO 的最近会话（不误伤 allowLast）', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage({
+      ...groupMsg({ id: 'g3', text: '这个群没带 UMO' }),
+      conv: { kind: 'group', id: '333', name: '丙群' },
+    });
+    await Promise.resolve();
+    settle(world, host);
+
+    const out = await toolHandler(world, 'astrbot_read_history')({}, toolCtx());
+    const text = typeof out === 'string' ? out : out.text;
+    expect(text).not.toContain('桥还没见过这个会话');
+    expect(text).toContain('丙群');
   });
 
   it('发送失败的英文 code 不吞掉中文 note', async () => {
