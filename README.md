@@ -50,6 +50,13 @@ Cortico Core（Persona、Memory、事件流）
 
 QQ 账号走的是 OneBot 这类非官方协议，账号有被限制的风险——这个风险来自 QQ 接入方式本身，与本包无关，装之前请自行判断。
 
+## 文档
+
+- [Coo 侧实现细节](docs/coo-side.md)
+- [UMO 桥协议契约](docs/umo-bridge-contract.md)
+- [Coo World 边界](docs/coo-world-boundary.md)
+- [UMO v2 设计稿](docs/umo-v2-design.md)
+
 ## 安装
 
 从扩展市场的卡片安装，或：
