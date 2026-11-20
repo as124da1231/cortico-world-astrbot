@@ -283,12 +283,45 @@ export class AstrbotWorld implements World {
     return [this.sendMessageTool(), this.statusTool(), this.historyTool(), this.callToolDef()];
   }
 
+  /** 「连接」面板的只读状态；只报 World 自己知道的事，不替 AstrBot 报策略。 */
+  private connectionState(): Record<string, unknown> {
+    const cfg = this.opts.cfg;
+    return {
+      enabled: cfg.enabled !== false,
+      connected: this.connected,
+      wsUrl: cfg.wsUrl,
+      tokenSet: !!cfg.token,
+      includeTime: cfg.includeTime !== false,
+      channelHint: cfg.channelHint !== false,
+      reconnectBaseMs: cfg.reconnectBaseMs ?? 1000,
+      reconnectMaxMs: cfg.reconnectMaxMs ?? 30_000,
+      self: this.driver?.self ?? null,
+      owners: this.driver?.ownerIds.length ?? 0,
+      tts: this.driver?.tts ?? { ready: false },
+      tools: this.driver?.tools.length ?? 0,
+      conversations: this.convs.size,
+    };
+  }
+
   webUi(): WorldWebUiDecl {
     return {
       ...(EXTENSION_VERSION
         ? { badges: [{ label: '版本', value: EXTENSION_VERSION, tone: 'plain' as const }] }
         : {}),
       config: [ASTRBOT_CONFIG_GROUP],
+      panels: [
+        {
+          id: 'connection',
+          title: '连接',
+          description: 'World 自己的桥地址、密钥和重连参数；群聊、私聊、工具和语音仍在 AstrBot 配置。',
+        },
+      ],
+      invoke: async (panel, method) => {
+        if (panel !== 'connection' || method !== 'state') {
+          throw new Error(`没有这个方法：${panel}.${method}`);
+        }
+        return this.connectionState();
+      },
       promptDocs: [
         {
           key: 'worlds.astrbot.envPrompt',

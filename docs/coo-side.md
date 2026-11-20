@@ -160,6 +160,36 @@ astrbot.disconnected
 | `includeTime` | `true` | 消息行首是否带时间 |
 | `channelHint` | `true` | 是否在需要回复的消息后加渠道提示 |
 
+### Coo 侧「连接」页
+
+World 页的第一个页签是「连接」，只放 Coo 这一端的东西：
+
+```text
+状态        已连接 / 等待连接 / 未启用，桥地址
+接入        启用、桥地址、桥 token
+行为        时间前缀、渠道提示、重连初始间隔与上限
+运行时      自报身份、主人、语音、工具数、会话数（只读）
+```
+
+保存经 `ctx.setConfig('world:astrbot', ...)` 写回配置：
+
+```text
+enabled / includeTime / channelHint  热更新
+wsUrl / token / reconnect*           保存后要点「重启 World」
+```
+
+群聊范围、私聊白名单、工具勾选和语音 Provider 仍在 AstrBot 插件页；  
+「配置」页签保留同一个 World 的通用表单，作为兜底。
+
+构建：
+
+```bash
+pnpm build:web   # src/webui/client.ts → dist/webui.js + dist/webui.css
+```
+
+`package.json` 的 `cortico.webUiClient` / `webUiStyle` 指向这两个产物。  
+改了 WebUI 代码要重新 build 并**重启 Coo**（扩展资源在启动时缓存）。
+
 ---
 
 ## 9. 重启与加载

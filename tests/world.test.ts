@@ -119,6 +119,33 @@ describe('装配', () => {
     expect(parseFrame('not json')).toBeNull();
     expect(parseFrame('{"t":"tick"}')).toEqual({ t: 'tick' });
   });
+  it('连接面板只报告 World 自己的状态', async () => {
+    const { world, driver } = await mount({ wsUrl: 'ws://127.0.0.1:18099', mode: 'all' });
+    driver.self = { id: '10001', name: 'Coo' };
+    driver.ownerIds = ['10001'];
+    driver.tts = { ready: true, provider: 'edge_tts' };
+    driver.tools = [
+      { name: 'query_lyrics_by_name' },
+      { name: 'play_song_by_name' },
+    ];
+    const ui = world.webUi();
+    expect(ui.panels?.map((p) => p.id)).toEqual(['connection']);
+    const st = (await ui.invoke?.('connection', 'state', [])) as Record<string, unknown>;
+    expect(st.enabled).toBe(true);
+    expect(st.connected).toBe(true);
+    expect(st.wsUrl).toBe('ws://127.0.0.1:18099');
+    expect(st.tokenSet).toBe(false);
+    expect(st.tools).toBe(2);
+    expect(st.owners).toBe(1);
+    expect(st.tts).toEqual({ ready: true, provider: 'edge_tts' });
+    expect(st).not.toHaveProperty('groups');
+    expect(st).not.toHaveProperty('privateMode');
+  });
+
+  it('连接面板拒绝没有的方法', async () => {
+    const { world } = await mount({ mode: 'all' });
+    await expect(world.webUi().invoke?.('connection', 'save', [])).rejects.toThrow('没有这个方法');
+  });
 });
 
 describe('版本显示', () => {

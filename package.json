@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-astrbot",
-  "version": "1.3.5",
+  "version": "1.3.6",
   "type": "module",
   "description": "让 Cortico 人格进 QQ 群交流，AstrBot 保留插件与账号 / Join QQ conversations through an AstrBot bridge, keeping AstrBot plugins while Cortico persona chats",
   "license": "MIT",
@@ -45,10 +45,13 @@
         "description": "Join QQ conversations through an AstrBot bridge, keeping AstrBot's plugins and accounts while a Cortico persona drives the talking."
       }
     },
-    "describe": "describe.json"
+    "describe": "describe.json",
+    "webUiClient": "dist/webui.js",
+    "webUiStyle": "dist/webui.css"
   },
   "files": [
     "src",
+    "dist",
     "assets",
     "README.md",
     "describe.json",
@@ -56,7 +59,8 @@
   ],
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json --noEmit",
+    "build:web": "node scripts/build-web.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -65,6 +69,7 @@
     "@types/node": "^22.10.0",
     "@types/ws": "^8.5.13",
     "cortico": "^0.2.7",
+    "esbuild": "0.21.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
