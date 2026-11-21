@@ -130,7 +130,7 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         title: '回复渠道提示',
         'x-hot': true,
         description:
-          '回复 QQ 消息时附带渠道提示（@、图片、私聊），帮助 Coo 判断该用发送工具还是 pet_say。',
+          '回复 QQ 消息时附带渠道提示（@、图片、私聊），只说明 QQ 发送方式，不改变其他 World 的回复工具。',
       },
       'worlds.astrbot.ownerId': {
         type: 'string',

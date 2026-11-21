@@ -82,8 +82,8 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     description:
       'Send a message into a QQ conversation through the AstrBot bridge. This is the ONLY ' +
       'way to speak on QQ: lines starting with 【QQ群 …】 or 【QQ私聊 …】 are QQ messages and ' +
-      'must be answered with this tool. Do NOT use pet_say for QQ messages — pet_say only ' +
-      'shows on the host computer screen, and nobody in the QQ group can see or hear it. ' +
+      'can be answered with this tool. This tool only controls QQ delivery; it does not ' +
+      'select or replace the reply tools of local chat, desktop pets, or other Worlds. ' +
       'Text, an image, or both. Set voice=true to speak a short text reply out loud ' +
       '(TTS; falls back to text if the bridge has no TTS). ' +
       'Only in a QQ turn: omit conv_id to reply in the conversation this turn came from. ' +
@@ -484,7 +484,11 @@ export class AstrbotWorld implements World {
     if (outcome !== 'delivered') return;
 
     const messages = events.filter((e) => {
-      if (e.origin !== 'external') return false;
+      // 宿主把控制台用户输入标记为 internal；不能因此保留上一轮 QQ 出口。
+      // 只纳入已核实的用户输入，其他内部状态事件仍不参与轮次判断。
+      const consoleInput = e.origin === 'internal' && e.source === 'console'
+        && (e.type === 'console.message' || e.type === 'console.invite');
+      if (e.origin !== 'external' && !consoleInput) return false;
       if (e.type.endsWith('.self')) return false;
       const meta = e.meta as { kind?: string } | undefined;
       if (meta?.kind === 'activity') return false;
@@ -682,7 +686,7 @@ export class AstrbotWorld implements World {
     const wantsReply = !isNotice && (isPrivate || called || (msg.images?.length ?? 0) > 0);
     const channelHint =
       wantsReply && this.opts.cfg.channelHint !== false
-        ? '\n（回这条用 astrbot_send_message；pet_say 只在电脑上显示，群里看不到）'
+        ? '\n（回复这条 QQ 消息用 astrbot_send_message；其他界面的消息不会自动转发到 QQ）'
         : '';
     const line = isNotice
       ? `${head}${noticeBody}`
@@ -875,7 +879,7 @@ export class AstrbotWorld implements World {
         if (voice && handle) return { text: '语音和图片不能是同一条消息，未发送。', failed: true };
 
         // 渠道硬校验：只有当前这一轮确实是 QQ 事件时，才允许用 QQ 出口。
-        // 显式 conv_id 也不能绕过 World 边界；桌宠/控制台请用 pet_say 或直接回复。
+        // 显式 conv_id 也不能绕过 QQ 边界；非 QQ 出口由来源 World 决定。
         const qqTurn = this.qqTurnActive();
         if (!qqTurn) {
           const why = this.turnMixed
@@ -883,7 +887,7 @@ export class AstrbotWorld implements World {
             : this.turnExpired()
               ? '本轮 QQ 消息已过期，QQ 出口已关闭；等 QQ 那边有人说话再回。'
               : '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
-                '桌宠/控制台聊天请用 pet_say 或直接回复。';
+                '非 QQ 消息请沿用来源 World 的回复方式，本扩展不更换回复工具。';
           this.host?.log.warn('QQ 出口被拒：这一轮不是 QQ 事件', {
             mixed: this.turnMixed,
             expired: this.turnExpired(),

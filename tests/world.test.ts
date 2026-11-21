@@ -336,7 +336,8 @@ describe('事件行格式：渠道在行首', () => {
     driver.emitMessage(groupMsg({ mentioned: true }));
     await Promise.resolve();
     await Promise.resolve();
-    expect(host.events[0]?.text).toContain('pet_say 只在电脑上显示');
+    expect(host.events[0]?.text).toContain('回复这条 QQ 消息用 astrbot_send_message');
+    expect(host.events[0]?.text).not.toContain('pet_say');
   });
 
   it('channelHint=false 时不加提示', async () => {
@@ -344,7 +345,7 @@ describe('事件行格式：渠道在行首', () => {
     driver.emitMessage(groupMsg({ mentioned: true }));
     await Promise.resolve();
     await Promise.resolve();
-    expect(host.events[0]?.text).not.toContain('pet_say 只在电脑上显示');
+    expect(host.events[0]?.text).not.toContain('回复这条 QQ 消息用 astrbot_send_message');
   });
 });
 
@@ -422,7 +423,8 @@ describe('发消息工具', () => {
     world.onTurnEnded();
     const out = await handlerOf(world, 'astrbot_send_message')({ text: '去群里说' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
-    expect(typeof out === 'string' ? out : out.text).toContain('pet_say');
+    expect(typeof out === 'string' ? out : out.text).toContain('沿用来源 World 的回复方式');
+    expect(typeof out === 'string' ? out : out.text).not.toContain('pet_say');
   });
 
   it('桌宠轮次显式给 conv_id 也不能发到 QQ', async () => {
@@ -1423,6 +1425,38 @@ function toolHandler(world: AstrbotWorld, name: string) {
   if (!tool) throw new Error(`没有工具 ${name}`);
   return tool.handler;
 }
+
+describe('QQ 扩展不接管本地回复出口', () => {
+  it('环境提示词和发送工具不指定其他 World 的发言工具或 QQ 优先级', async () => {
+    const prompt = readFileSync(new URL('../src/ENV_PROMPT.md', import.meta.url), 'utf8');
+    const { world } = await mount();
+    const send = world.tools().find(t => t.name === 'astrbot_send_message')!;
+    for (const text of [prompt, send.description]) {
+      expect(text).not.toMatch(/\b(?:pet_say|pet_act|live2d_pet_say|console_send)\b/);
+      expect(text).not.toContain('就优先回 QQ');
+      expect(text).not.toContain('先回 QQ');
+    }
+    expect(prompt).toContain('非 QQ 消息沿用来源 World 的规则与回复工具');
+  });
+
+  it.each([
+    ['desktop-pet.message', 'desktop-pet', 'chat', 'external'],
+    ['desktop-pet.message', 'desktop-pet', 'bubble', 'external'],
+    ['desktop-live2d-pet.message', 'desktop-live2d-pet', 'chat', 'external'],
+    ['console.message', 'console', 'chat', 'internal'],
+  ])('%s / %s / %s / %s 不继承 QQ 出口，也不被重定向到指定桌宠', async (type, source, via, origin) => {
+    const { driver, world } = await mount({ mode: 'all' });
+    world.onEventsSettled([humanEvent('before-local')], 'delivered');
+    world.onEventsSettled([{
+      type, source, origin, text: '本地对话', meta: { via, text: '本地对话' },
+    } as unknown as EventEnvelope], 'delivered');
+    const out = await toolHandler(world, 'astrbot_send_message')({ text: '答复' }, toolCtx());
+    const text = typeof out === 'string' ? out : out.text;
+    expect(driver.sent).toHaveLength(0);
+    expect(text).toContain('沿用来源 World');
+    expect(text).not.toMatch(/\b(?:pet_say|live2d_pet_say|console_send)\b/);
+  });
+});
 
 describe('轮次判定：通知不建立也不污染 QQ 轮次', () => {
   it('[人话, 工具清单通知] 不算 mixed，正常发 QQ', async () => {

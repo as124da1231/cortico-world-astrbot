@@ -90,11 +90,11 @@ corepack pnpm add cortico-world-astrbot
 |---|---|---|
 | QQ 群 | `【QQ群 群名 时刻】` | `astrbot_send_message` |
 | QQ 私聊 | `【QQ私聊 时刻】` | `astrbot_send_message` |
-| 桌宠 | `[touch]` / `[typed]` / `[voice]` | `pet_say` / `pet_act` |
+| Coo 对话页、桌宠或其他非 QQ 输入 | 由来源 World 定义 | 沿用来源 World 的回复规则，本扩展不指定 |
 
 `owner` 与 `role` 分开：`role` 是 AstrBot 的工具权限，`owner` 才是「主人」。当前两者都取 AstrBot 管理员名单。
 
-**一个边界要说清**：`pet_say` 是 desktop-pet 的 World，本包**不能**把它从工具表里拿掉。要保证 QQ 轮次完全看不到桌宠出口，唯一硬办法是给 QQ 单独建一个只启用 AstrBot World 的会话/人格。本包能做的是：事件行写清渠道、自己的 QQ 出口有硬校验、提示词点名 `pet_say` 不能用。
+**接入边界**：本包只定义 QQ 事件与自己的工具，不替 Coo 对话页、桌宠或控制台指定回复工具。不把 `[typed]` 等通用标签一概当成原版桌宠，也不要求混合输入时优先回 QQ。QQ 出口的硬校验只约束本包；本地对话继续由原有 World 处理，不需要修改 Coo 安装目录。
 
 ## 它不做什么
 

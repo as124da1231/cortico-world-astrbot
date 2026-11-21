@@ -114,7 +114,7 @@ function settingsCard(
 
   const hintBox = ui.checkbox('回复时带渠道提示', {
     checked: channelHint,
-    title: '告诉 Coo 这条回复该用 astrbot_send_message 还是 pet_say',
+    title: '仅提示 QQ 消息使用 astrbot_send_message，不改变本地对话的回复方式',
     onChange: (checked) => {
       channelHint = checked;
       mark();
