@@ -63,6 +63,7 @@ function settingsCard(
   let token = '';
   let clearToken = false;
   let ownerId = st.ownerId;
+  let ownerToolToken = '';
   let includeTime = st.includeTime;
   let channelHint = st.channelHint;
   let base = String(st.reconnectBaseMs);
@@ -101,6 +102,19 @@ function settingsCard(
       ownerId = value;
       mark();
     },
+  });
+
+  const ownerTokenInput = ui.input({
+    type: 'password',
+    placeholder: st.ownerToolTokenSet ? '已设置；留空保持不变' : '填 AstrBot 的独立工具令牌',
+    onInput: (value) => {
+      ownerToolToken = value;
+      mark();
+    },
+  });
+  const ownerToolsEnabled = ui.checkbox('启用主人工具授权', {
+    checked: st.ownerToolsEnabled,
+    onChange: mark,
   });
 
   const timeBox = ui.checkbox('带时间前缀', {
@@ -173,6 +187,8 @@ function settingsCard(
     urlInput,
     tokenInput,
     ownerInput,
+    ownerTokenInput,
+    ownerToolsEnabled.input,
     baseInput,
     maxInput,
     timeBox.input,
@@ -204,6 +220,10 @@ function settingsCard(
       if (owner.length > 20) {
         throw new Error('主人 QQ 最长 20 位');
       }
+      const ownerCredential = ownerToolToken.trim();
+      if (ownerCredential && !/^[\x21-\x7e]+$/.test(ownerCredential)) {
+        throw new Error('主人工具令牌请使用无空格的可打印 ASCII 字符');
+      }
       const baseMs = Number.parseInt(base, 10);
       const maxMs = Number.parseInt(max, 10);
       if (!Number.isFinite(baseMs) || !Number.isFinite(maxMs)) {
@@ -217,11 +237,13 @@ function settingsCard(
         'worlds.astrbot.includeTime': includeTime,
         'worlds.astrbot.channelHint': channelHint,
         'worlds.astrbot.ownerId': owner,
+        'worlds.astrbot.ownerToolsEnabled': ownerToolsEnabled.input.checked,
         'worlds.astrbot.reconnectBaseMs': Math.max(200, Math.min(baseMs, 60_000)),
         'worlds.astrbot.reconnectMaxMs': Math.max(1000, Math.min(maxMs, 600_000)),
       };
       if (clearToken) values['worlds.astrbot.token'] = '';
       else if (token.trim()) values['worlds.astrbot.token'] = token.trim();
+      if (ownerCredential) await ctx.invoke('save-owner-token', [ownerCredential]);
       await ctx.setConfig(GROUP, values);
       clearToken = false;
       token = '';
@@ -251,12 +273,14 @@ function settingsCard(
   tools.append(
     ui.h('div', 'astrbot-glabel', '工具身份'),
     ui.field('主人 QQ', ownerInput),
+    ui.field('主人工具令牌', ownerTokenInput),
+    ownerToolsEnabled.el,
     ui.h(
       'div',
       'astrbot-note',
-      st.admins.length
-        ? `AstrBot 管理员：${st.admins.join('、')}。Coo 对话轮次以这个身份调工具；留空表示不借身份。`
-        : '桥连上后会显示 AstrBot 的管理员。Coo 对话轮次以这个身份调工具；留空表示不借身份。',
+      st.ownerTools
+        ? '桥已授予主人工具权限。主人 QQ 须与 AstrBot 配置中的账号一致。'
+        : '桥尚未授予主人工具权限。在 AstrBot 设置主人 QQ 和独立工具令牌，在这里填同一组值。远程地址使用 wss://。',
     ),
   );
 
@@ -278,7 +302,7 @@ function settingsCard(
     ui.h(
       'div',
       'astrbot-note',
-      '地址、token 和重连参数保存后，点页面底部的「重启 World」生效；其余即时生效。',
+      '地址、令牌和重连参数保存后，点页面底部的「重启 World」生效。',
     ),
     bar.el,
   );

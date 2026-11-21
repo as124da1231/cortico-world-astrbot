@@ -15,6 +15,10 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
     new AstrbotWorld({
       cfg: ctx.cfg,
       timezone: ctx.timezone,
+      ownerToolSecret: {
+        read: () => ctx.secret('ASTRBOT_OWNER_TOOL_TOKEN'),
+        store: (value) => ctx.storeSecret('ASTRBOT_OWNER_TOOL_TOKEN', value),
+      },
     }),
   describe: {
     tools: describeTools([...ASTRBOT_TOOL_DECLS, CALL_TOOL_DECL], {

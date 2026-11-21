@@ -144,6 +144,7 @@ export interface BridgeDriver {
   readonly self?: { id?: string; name?: string };
   /** 桥报来的管理员 QQ 号；空数组表示还没收到。 */
   readonly ownerIds: string[];
+  readonly ownerTools?: boolean;
   /** 桥自报的语音能力；没收到时按不可用。 */
   readonly tts: BridgeTtsInfo;
   /** 桥那边启用的工具清单；桥没连上时是上一次收到的。 */
@@ -170,6 +171,7 @@ export interface BridgeDriver {
 export interface BridgeDriverOptions {
   wsUrl: string;
   token?: string;
+  ownerToolToken?: string;
   /** 握手时自报的能力；桥据此决定要不要把图片传过来。 */
   capabilities?: Record<string, boolean>;
   /** 重连等待起点。 */
@@ -265,6 +267,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   self?: { id?: string; name?: string };
   /** 桥报来的管理员 QQ 号：QQ 上这些人是主人本人。 */
   ownerIds: string[] = [];
+  ownerTools = false;
   /** 桥自报的语音能力；没收到时按不可用。 */
   tts: BridgeTtsInfo = { ready: false };
 
@@ -442,10 +445,19 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     // HTTP 头只能放可打印 ASCII；自定义的非 ASCII token 走 hello 帧（兼容路径）。
     const headerToken = token && /^[\x20-\x7e]+$/.test(token) ? token : '';
     const handshakeMs = this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    this.ownerTools = false;
     let ws: WebSocket;
     try {
+      const url = new URL(this.opts.wsUrl);
+      const local = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
+      const ownerToken = this.opts.ownerToolToken?.trim();
+      const headers: Record<string, string> = {};
+      if (headerToken) headers.Authorization = `Bearer ${headerToken}`;
+      if (token && ownerToken && /^[\x21-\x7e]+$/.test(ownerToken) && (local || url.protocol === 'wss:')) {
+        headers['X-Cortico-Owner-Token'] = ownerToken;
+      }
       ws = new WebSocket(this.opts.wsUrl, {
-        headers: headerToken ? { Authorization: `Bearer ${headerToken}` } : undefined,
+        headers,
         // 对端只接受 TCP、不回 101 时，ws 自己不会超时；这里必须给。
         ...(handshakeMs > 0 ? { handshakeTimeout: handshakeMs } : {}),
       });
@@ -703,6 +715,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     }
 
     if (t === 'ready') {
+      this.ownerTools = frame.ownerTools === true;
       const self = frame.self as { id?: unknown; name?: unknown } | undefined;
       this.self = {
         id: self?.id === undefined ? undefined : String(self.id),

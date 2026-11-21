@@ -86,6 +86,31 @@ describe('配置解析', () => {
 });
 
 describe('装配', () => {
+  it('工具令牌只存部署密钥，连接状态只返回设置状态', async () => {
+    let stored = '';
+    const world = new AstrbotWorld({
+      cfg: config(),
+      timezone: 'Asia/Shanghai',
+      ownerToolSecret: { read: () => stored, store: (value) => { stored = value; } },
+    });
+    const invoke = world.webUi().invoke!;
+    await expect(invoke('connection', 'save-owner-token', ['invalid token'])).rejects.toThrow();
+    await expect(invoke('connection', 'save-owner-token', ['secret-fixture-owner-token'])).resolves.toEqual({ saved: true });
+    const result = await invoke('connection', 'state', []);
+    expect(result).toMatchObject({ ownerToolTokenSet: true, ownerTools: false });
+    expect(JSON.stringify(result)).not.toContain(stored);
+  });
+
+  it('桥未确认主人工具授权时不派发工具调用', async () => {
+    const { world, driver } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    driver.ownerTools = false;
+    const result = await toolHandler(world, 'astrbot_call_tool')({ name: 'test_tool' }, toolCtx());
+    expect(result).toMatchObject({ failed: true });
+    expect(driver.toolCalls).toEqual([]);
+    await world.stop();
+  });
+
   it('定义声明了工具，且默认关闭', () => {
     expect(ASTRBOT.id).toBe('astrbot');
     expect(ASTRBOT.defaults().enabled).toBe(false);

@@ -106,6 +106,7 @@ export interface AstrbotWorldOptions {
   /** `worlds.astrbot` 的活引用：热改的键现读即生效。 */
   cfg: AstrbotConfigSection;
   timezone: string;
+  ownerToolSecret?: { read(): string; store(value: string): void };
   /** 测试用：换掉真实驱动。 */
   driver?: BridgeDriver;
   /** 首次连接最多等多久；到点先继续启动，后台继续重连。 */
@@ -352,6 +353,9 @@ export class AstrbotWorld implements World {
       includeTime: cfg.includeTime !== false,
       channelHint: cfg.channelHint !== false,
       ownerId: String(cfg.ownerId ?? ''),
+      ownerToolTokenSet: !!this.opts.ownerToolSecret?.read(),
+      ownerToolsEnabled: cfg.ownerToolsEnabled !== false,
+      ownerTools: this.connected && this.driver?.ownerTools === true,
       admins: this.driver?.ownerIds ?? [],
       reconnectBaseMs: cfg.reconnectBaseMs ?? 1000,
       reconnectMaxMs: cfg.reconnectMaxMs ?? 30_000,
@@ -376,11 +380,18 @@ export class AstrbotWorld implements World {
           description: 'World 自己的桥地址、密钥和重连参数；群聊、私聊、工具和语音仍在 AstrBot 配置。',
         },
       ],
-      invoke: async (panel, method) => {
-        if (panel !== 'connection' || method !== 'state') {
-          throw new Error(`没有这个方法：${panel}.${method}`);
+      invoke: async (panel, method, args) => {
+        if (panel === 'connection') {
+          if (method === 'state') return this.connectionState();
+          if (method === 'save-owner-token') {
+            const value = typeof args[0] === 'string' ? args[0].trim() : '';
+            if (!/^[\x21-\x7e]+$/.test(value)) throw new Error('工具令牌应使用无空格的可打印 ASCII 字符');
+            if (!this.opts.ownerToolSecret) throw new Error('当前部署无法保存工具令牌');
+            this.opts.ownerToolSecret.store(value);
+            return { saved: true };
+          }
         }
-        return this.connectionState();
+        throw new Error(`没有这个方法：${panel}.${method}`);
       },
       promptDocs: [
         {
@@ -412,6 +423,7 @@ export class AstrbotWorld implements World {
       new AstrbotBridgeDriver({
         wsUrl: cfg.wsUrl,
         token: cfg.token,
+        ownerToolToken: cfg.ownerToolsEnabled !== false ? this.opts.ownerToolSecret?.read() : undefined,
         // 告诉桥「我这边能不能读图」，桥据此决定原图要不要过来。
         capabilities: { images: this.acceptsImages(host) },
         reconnectBaseMs: cfg.reconnectBaseMs,
@@ -865,6 +877,12 @@ export class AstrbotWorld implements World {
             };
           }
           actor = { kind: 'owner', id: ownerId };
+          if (this.opts.cfg.ownerToolsEnabled === false || driver.ownerTools !== true) {
+            return {
+              text: '桥未授予主人工具权限。请升级桥，在 AstrBot 配置主人 QQ 和独立工具令牌，并在 Coo 连接页填入相同值。',
+              failed: true,
+            };
+          }
         }
         const res = await driver.callTool(name, args, turn, actor);
         // 调用开始时还 active：工具耗时再长也不把它误判成过期（过期轮次不复活）。

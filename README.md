@@ -6,9 +6,9 @@ QQ + AstrBot + Coo：不用换 QQ，不用搬 AstrBot 插件，只把「说话�
 
 QQ 里的人继续在群和私聊里说话；AstrBot 继续管账号、插件、工具和语音；Coo 带着自己的性格和记忆进来回复。
 
-群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；在 Coo 对话里填好主人 QQ（该号还要在 AstrBot 的管理员名单里），也能用同一个身份调用。
+群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；Coo 对话里可以使用 AstrBot 已授权的主人身份和独立工具令牌调用。
 
-**当前版本：1.3.6**
+**当前版本：1.3.7**
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
@@ -77,7 +77,7 @@ corepack pnpm add cortico-world-astrbot
   图片取不到时写成 `[图片|没取到：原因]`，不让模型猜。
 - 提供 `astrbot_send_message`，让 bot 能把话（文字、图片或语音）发回群里；`voice: true` 会请桥用 TTS 合成，桥没开或失败时自动退回文字。
 - QQ 轮次可以省略目标，隐式回触发会话；**非 QQ 轮次**只有在「连接」填了主人 QQ（且该号是 AstrBot 管理员）、并用 `conv_id` / `reply_to` 指定已知会话时才允许主动发送。缺任何一条都会被拒绝并说明原因；显式目标必须是桥见过、带 UMO 的会话。
-- 工具也是两条身份路径：QQ 轮次用「触发这一轮的那条消息」的发言者身份，普通群友的管理员工具会被拒绝；Coo 对话轮次只有在「连接」里填了主人 QQ、且这个号在 AstrBot 管理员名单里时，才以该主人身份执行。超过 2 分钟的旧 QQ 轮次不会借主人身份。失败时如实显示中文原因，不假装成功。
+- 工具也是两条身份路径：QQ 轮次用「触发这一轮的那条消息」的发言者身份，普通群友的管理员工具会被拒绝；Coo 对话轮次须在「连接」填写 AstrBot 授权的主人 QQ 和独立工具令牌。远程工具授权通过 wss:// 连接。超过 2 分钟的旧 QQ 轮次不会借主人身份。失败时如实显示中文原因，不假装成功。
 - 纯 QQ 通知（撤回、戳一戳、入退群）只作为上下文，不建立 QQ 轮次；`[QQ 人消息 + 工具清单通知]` 这种同批也不算 mixed，仍然可以正常回复。`turnMsgId` 为空（只有通知）时拒绝发消息和调工具。
 - 提供 `astrbot_status`，查连接状态、这一轮是不是 QQ 轮次、语音是否可用、见过的会话。
 - 提供 `astrbot_read_history`，按关键词或发送者回查自己见过的 QQ 消息。
@@ -134,6 +134,7 @@ QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过�
 | `reconnectBaseMs` | `1000` | 断线后第一次重连等待；之后翻倍 |
 | `reconnectMaxMs` | `30000` | 重连等待上限 |
 | `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具、以及非 QQ 轮次主动发 QQ 时借用的管理员 QQ；必须纯数字、20 位以内，且在该 AstrBot 的 `admins_id` 里。留空表示不借身份、也不允许主动发送 |
+| `ownerToolsEnabled` | `true` | 使用连接页存入部署密钥的独立工具令牌。停用后重启 World 释放连接授权。 |
 | `allowAtAll` | `false` | 允许 `at: ["all"]` @全体。面板暂无开关，改部署的 `config.json` 里的 `worlds.astrbot.allowAtAll` |
 
 群范围、`mention` / `all` 消息范围、称呼和发送频率都由 AstrBot 插件统一控制，World 不再重复配置。
@@ -170,7 +171,7 @@ QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过�
     { "umo": "default:GroupMessage:123456", "kind": "group", "id": "123456", "age_sec": 12 } ] }
 ```
 
-`admins` 就是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。1.3.6 起 `ready` 还带 `conversations[]`（最多 20 条最近会话，含重启前恢复的），World 用它支持主动发送。**收到 `ready` 之后才算真正就绪**；只 TCP 连上不算。
+经桥 token 认证后，`admins` 是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。1.3.6 起 `ready` 还带 `conversations[]`（最多 20 条最近会话，含重启前恢复的），World 用它支持主动发送。**收到 `ready` 之后才算真正就绪**；只 TCP 连上不算。
 
 桥推消息：
 

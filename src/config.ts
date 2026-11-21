@@ -26,6 +26,8 @@ export interface AstrbotConfigSection {
    * 留空表示 Coo 轮次不借工具身份；AstrBot 的管理员名单仍是唯一权限来源。
    */
   ownerId: string;
+  /** 是否向桥提交部署中的主人工具令牌。 */
+  ownerToolsEnabled: boolean;
   /** 允许用 at=["all"] @全体；默认关闭，避免误触发整群。 */
   allowAtAll: boolean;
 
@@ -72,6 +74,7 @@ export const ASTRBOT_DEFAULTS: AstrbotConfigSection = {
   reconnectMaxMs: 30_000,
   channelHint: true,
   ownerId: '',
+  ownerToolsEnabled: true,
   allowAtAll: false,
   // 旧配置兼容；World 不再读取，实际策略由 AstrBot 插件决定。
   mode: 'mention',
@@ -146,6 +149,12 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         pattern: '^\\d*$',
         maxLength: 20,
       } as ConfigProperty,
+      'worlds.astrbot.ownerToolsEnabled': {
+        type: 'boolean',
+        title: '启用主人工具授权',
+        'x-hot': false,
+        description: '使用在连接页保存的独立工具令牌。远程连接使用 wss://，本机可使用回环地址。',
+      },
       'worlds.astrbot.allowAtAll': {
         type: 'boolean',
         title: '允许 @全体成员',

@@ -343,7 +343,7 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 ```
 
 - `turn` 与 `actor` 只能二选一；都没有 → `missing_identity`，同时都有 → `ambiguous_identity`，actor 形状不对 → `bad_actor`。
-- 插件再次校验 `turn` 未过期（600 秒）、`actor.id` 在 `admins_id`、`tools_allow` 与 AstrBot 工具权限。
+- 插件再次校验 `turn` 未过期（600 秒）、`tools_allow` 与 AstrBot 工具权限。主人 `actor.id` 须匹配桥端管理员，并由独立工具令牌授权。`ready.ownerTools` 刷新当前连接的授权状态，缺失按未授权处理。`owner_auth_required` 表示本次调用未获得主人授权。
 - 工具异常返回 `tool_failed`，异常原文只进插件日志。
 
 ---

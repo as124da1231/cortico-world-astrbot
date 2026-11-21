@@ -8,6 +8,9 @@ export interface ConnectionState {
   includeTime: boolean;
   channelHint: boolean;
   ownerId: string;
+  ownerToolTokenSet: boolean;
+  ownerToolsEnabled: boolean;
+  ownerTools: boolean;
   admins: string[];
   reconnectBaseMs: number;
   reconnectMaxMs: number;

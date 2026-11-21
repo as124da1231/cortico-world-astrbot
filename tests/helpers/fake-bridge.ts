@@ -103,6 +103,7 @@ export class FakeDriver implements BridgeDriver {
   connected = false;
   self?: { id?: string; name?: string };
   ownerIds: string[] = [];
+  ownerTools = true;
   tts = { ready: false } as { ready: boolean; provider?: string };
   tools: ToolInfo[] = [];
   started = 0;

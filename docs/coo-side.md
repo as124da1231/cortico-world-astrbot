@@ -118,9 +118,10 @@ QQ 轮次
   → 插件用那条消息的身份执行
 
 Coo 对话轮次
-  → 连接页里填的主人 QQ（ownerId）
+  → 桥的 ready 确认独立工具令牌已获授权
+  → 连接页填写 AstrBot 指定的主人 QQ（ownerId）
   → 帧 {t:'tool', rid, name, args, turn:'', actor:{kind:'owner', id}}
-  → 插件校验 id 在 admins_id
+  → 插件校验连接授权、指定 QQ 和管理员名单
   → 合成「主人私聊」事件，role=admin
   → 工具的 event.send 落到主人私聊
 
