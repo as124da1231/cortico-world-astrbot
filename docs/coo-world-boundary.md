@@ -17,13 +17,14 @@
 
 - 事件：只接收 `bridge_platforms` 里的平台（默认 `default`）；`webchat`、`console`、`default1` 不推、不 `stop_event`。
 - 发送：`astrbot_send_message` 只允许当前 QQ 轮次；显式 `conv_id` 不能绕过，且目标必须是桥见过、带 UMO 的会话。
-- 工具：QQ 轮次用触发消息的发言者身份；Coo 对话轮次只有在连接页填了主人 QQ、且该号在 AstrBot `admins_id` 里时才以 owner 执行。mixed 或过期的 QQ 轮次不借主人身份。
+- 工具：QQ 轮次用触发消息的发言者身份；Coo 对话轮次只有在连接页填了主人 QQ、且该号在 AstrBot `admins_id` 里时才以 owner 执行。过期的 QQ 轮次不借主人身份。
 - 轮次生命周期：`idle` 或 `onTurnEnded` 清空；纯 QQ 通知不建立轮次；2 分钟 TTL 只作兜底，长工具链会续期。
+- 来源判定只用自己的事件：宿主按 `source` 分发 `onEventsSettled`，本包不去读、也不会拿到其他 World 的输入。同批是否混有本地输入，本包无法证明。
 
 ### Coo 控制台与 AstrBot webchat
 
-- Coo `console.message` 是 Coo 自己的控制台输入，宿主标记 `origin: internal`。宿主的 `onEventsSettled` 只通知事件所属 World；本包通过只读事件库和投递阶段检查它，关闭旧 QQ 出口，不能等待控制台事件回调到 AstrBot。
-- AstrBot `webchat` 是另一个服务的对话页，不要与 Coo 控制台或桌宠聊天页混同。
+- Coo `console.message` 属于 Coo 控制台（`origin: internal`），由 Console World 自己负责；本包不接管它的回复。
+- AstrBot `webchat` 是另一个服务的对话页，不要与 Coo 控制台、「对话」页或桌宠聊天页混同。
 - 桥只处理 UMO 第一段在 `bridge_platforms` 中的事件。
 
 ## 当前行为摘要
@@ -35,6 +36,7 @@
 
 ## 已知限制
 
-- 同一会话里其他 World 的工具可能仍然可见，本包不重写或移除它们。提示词收窄并不能代替真实实例中的跨入口回归验证。
-- 跨来源输入按游标扫描，启动前历史不参与；发送及身份借用前再检查。扫描超出 512 个事件或读取失败时保守拒绝 QQ 发送，不改写其他来源的记录。
+- 同一会话里其他 World 的工具可能仍然可见，本包不重写或移除它们。
+- 本包不读取共享事件库来推断“这一批还有哪些输入”。QQ 轮次里若同时混入本地内容，本包不能识别；这属于现有 World 契约的空白，不用猜测或改写其他来源来补齐。
+- Coo「对话」页是 Coo 与用户的界面，由 `desktop-pet` 负责写回；本包不向它写入，也不要求它显示 QQ 内容。核对本包行为看控制台／追踪视图。
 - 此前把聊天页空白直接归因于宿主缺陷的结论未经启停扩展对照，不作为发布依据；宿主热修已撤回。

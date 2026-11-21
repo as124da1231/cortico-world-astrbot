@@ -221,8 +221,6 @@ export class AstrbotWorld implements World {
   private turnMsgId = '';
   /** 这一轮有没有投递过 QQ 事件；由 onEventsSettled 置位，onTurnEnded 清掉。 */
   private turnChannel?: 'qq';
-  /** 同一批里既有 QQ 又有桌宠/其他渠道：QQ 出口关闭，宁可不发也不发错。 */
-  private turnMixed = false;
   /** 同一批里出现多个 QQ 会话（比如私聊 + 群）：隐式发送会猜错，必须显式指定。 */
   private turnMultiConv = false;
   /** 最近见过的消息 id → 会话；reply_to 用它解析目标。 */
@@ -231,10 +229,6 @@ export class AstrbotWorld implements World {
   private turnChannelAt = 0;
   /** 这一轮最后投递的 QQ 会话；状态工具用。 */
   private turnConv?: Conv;
-  /** 只读共享事件库的扫描水位；启动前的历史不参与当前路由。 */
-  private routeCursor = 0;
-  /** 当前投递窗口里观察到其他来源；保守拒绝混合 QQ 出口。 */
-  private batchHasOtherInput = false;
   /** 最近一条真正的人话消息；状态工具用来说清「最近一条从哪来」。 */
   private lastInbound?: { conv: Conv; sender: string; ts: string };
 
@@ -362,8 +356,6 @@ export class AstrbotWorld implements World {
 
   async start(host: WorldHost): Promise<void> {
     this.host = host;
-    this.routeCursor = host.store.latestCursor();
-    this.batchHasOtherInput = false;
     const cfg = this.opts.cfg;
 
     const driver =
@@ -478,16 +470,14 @@ export class AstrbotWorld implements World {
   }
 
   /**
-   * Core 只通知本 World 自己产生的事件。跨来源输入另从只读事件库观察：
-   * 这一轮有 QQ 消息，才允许用 QQ 出口。比「最近 N 秒来过 QQ 消息」准，
-   * 因为桌宠轮次不会把上一轮的 QQ 消息误算进来。
+   * Core 只通知本 World 自己产生的事件。本包只据此判断“这一轮有没有 QQ 人话”：
+   * 有，才允许用 QQ 出口；纯 QQ 通知（撤回/入群/戳一戳）不能建立轮次。
    *
-   * 判定只看「人话」：纯 QQ 通知（撤回/入群/戳一戳）不能建立轮次。
-   * 其他来源由投递阶段和工具执行前的共享事件库检查处理。
+   * 其他来源的输入不出现在这个回调里，本包也不去猜：本地对话由各自的 World
+   * 处理，QQ 出口只服务本包自己收到的消息。
    */
   onEventsSettled(events: readonly EventEnvelope[], outcome: 'delivered' | 'discarded'): void {
     if (outcome !== 'delivered') return;
-    this.batchHasOtherInput = this.observeOtherInput(false) || this.batchHasOtherInput;
 
     const qq = events.filter(e => e.source === this.id && e.origin === 'external'
       && e.type === 'astrbot.message');
@@ -497,7 +487,6 @@ export class AstrbotWorld implements World {
     });
     if (human.length === 0) return;
 
-    this.turnMixed = this.batchHasOtherInput;
     // 只有「人话」跨会话才算歧义；通知不该把回复目标带到别的群。
     const convKeys = new Set(
       human
@@ -523,74 +512,32 @@ export class AstrbotWorld implements World {
       this.host?.log.info('本轮渠道：QQ', {
         conv: c ? `${c.kind}:${c.id}` : 'unknown',
         events: human.length,
-        mixed: this.turnMixed,
       });
     }
   }
 
-  /** 清掉 QQ 轮次的全部状态；stop / 轮次结束 / 纯桌宠批次都走这里。 */
+  /** 清掉 QQ 轮次的全部状态；stop / 轮次结束都走这里。 */
   private clearTurn(): void {
     this.turnChannel = undefined;
     this.turnConv = undefined;
     this.turnMsgId = '';
-    this.turnMixed = false;
     this.turnMultiConv = false;
     this.turnChannelAt = 0;
   }
 
-  /** 一轮结束：下一轮如果只有桌宠事件，QQ 出口就该关上。 */
+  /** 一轮结束：下一次只有非 QQ 输入时，QQ 出口就该关上。 */
   onTurnEnded(): void {
     this.clearTurn();
-    this.batchHasOtherInput = false;
   }
 
-  /** 所有 World 都收到阶段通知；不能等其他来源的 onEventsSettled。 */
+  /** 运行阶段回到 idle 时也清掉 QQ 轮次，避免下一轮复用上一轮的 QQ 出口。 */
   onRunPhase(phase: RunPhase): void {
-    if (phase.state === 'delivering') {
-      this.batchHasOtherInput = this.observeOtherInput();
-      if (this.batchHasOtherInput) this.clearTurn();
-      return;
-    }
     if (phase.state !== 'idle') return;
     this.clearTurn();
-    this.batchHasOtherInput = false;
-  }
-
-  /** 与 QQBot 的共享会话路由一样，只读扫描新事件，不拦截或修改其他 World。 */
-  private observeOtherInput(advance = true): boolean {
-    const host = this.host;
-    if (!host) return false;
-    try {
-      const latest = host.store.latestCursor();
-      if (latest <= this.routeCursor) return false;
-      // range 从末尾取 limit；超出窗口时不能把截断部分当作没有其他输入。
-      if (latest - this.routeCursor > 512) {
-        if (advance) this.routeCursor = latest;
-        return true;
-      }
-      const events = host.store.range({ fromCursor: this.routeCursor + 1, toCursor: latest });
-      if (advance) this.routeCursor = latest;
-      return events.some(event => {
-        if (event.source === this.id || event.type.endsWith('.self')) return false;
-        if (event.contextDelivery === 'archive-only' || event.meta?.kind === 'activity') return false;
-        if (event.origin === 'external') return true;
-        return event.origin === 'internal' && event.source === 'console'
-          && (event.type === 'console.message' || event.type === 'console.invite');
-      });
-    } catch (error) {
-      host.log.warn('无法核实跨来源输入，保守关闭 QQ 出口', { error: String(error) });
-      return true;
-    }
   }
 
   /** 这一轮是不是 QQ 轮次；onTurnEnded 万一没来，短 TTL 后自动失效。 */
   private qqTurnActive(): boolean {
-    // 工具执行前再检查，覆盖模型生成或长工具执行期间新来的本地消息。
-    if (this.observeOtherInput(false) && this.turnChannel === 'qq') {
-      this.batchHasOtherInput = true;
-      this.turnMixed = true;
-    }
-    if (this.turnMixed) return false;
     if (this.turnChannel !== 'qq') return false;
     return Date.now() - this.turnChannelAt < QQ_TURN_TTL_MS;
   }
@@ -825,7 +772,7 @@ export class AstrbotWorld implements World {
           return { text: '与 AstrBot 桥的连接未建立，工具没有执行。', failed: true };
         }
         // QQ 轮次用触发这一轮的人话消息；Coo 对话轮次用「连接」里指定的主人 QQ。
-        // mixed 或过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。
+        // 过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。
         let turn = '';
         let actor: ToolActor | undefined;
         const startedActive = this.qqTurnActive();
@@ -839,11 +786,6 @@ export class AstrbotWorld implements World {
           // 长工具链靠这里续期；调用返回后再补一次，见下方。
           this.touchTurn();
           turn = this.turnMsgId;
-        } else if (this.turnMixed) {
-          return {
-            text: '这一轮同时有 QQ 和非 QQ 事件，不能借主人身份，工具没有执行。',
-            failed: true,
-          };
         } else if (this.turnExpired()) {
           return {
             text: '本轮 QQ 消息已过期，不能借主人身份，工具没有执行；等 QQ 那边有人说话再试。',
@@ -895,18 +837,15 @@ export class AstrbotWorld implements World {
         if (voice && !text) return { text: '语音需要正文，未发送。', failed: true };
         if (voice && handle) return { text: '语音和图片不能是同一条消息，未发送。', failed: true };
 
-        // 渠道硬校验：只有当前这一轮确实是 QQ 事件时，才允许用 QQ 出口。
-        // 显式 conv_id 也不能绕过 QQ 边界；非 QQ 出口由来源 World 决定。
+        // 渠道硬校验：只有当前这一轮确实是 QQ 人话事件时，才允许用 QQ 出口。
+        // 显式 conv_id 也不能绕过；非 QQ 输入由来源 World 自己处理。
         const qqTurn = this.qqTurnActive();
         if (!qqTurn) {
-          const why = this.turnMixed
-            ? '这一轮不是 QQ 消息独占：同时有 QQ 和非 QQ 事件，为避免发错，QQ 出口已关闭。'
-            : this.turnExpired()
-              ? '本轮 QQ 消息已过期，QQ 出口已关闭；等 QQ 那边有人说话再回。'
-              : '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
-                '非 QQ 消息请沿用来源 World 的回复方式，本扩展不更换回复工具。';
+          const why = this.turnExpired()
+            ? '本轮 QQ 消息已过期，QQ 出口已关闭；等 QQ 那边有人说话再回。'
+            : '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
+              '非 QQ 消息请沿用来源 World 的回复方式，本扩展不更换回复工具。';
           this.host?.log.warn('QQ 出口被拒：这一轮不是 QQ 事件', {
-            mixed: this.turnMixed,
             expired: this.turnExpired(),
           });
           return { text: why, failed: true };
