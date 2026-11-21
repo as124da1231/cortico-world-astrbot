@@ -31,7 +31,21 @@ async function mount(patch: Partial<AstrbotConfigSection> = {}) {
 
 /** 模拟 Core 把这一批事件交给模型；这一轮有没有 QQ 消息由它决定。 */
 function settle(world: AstrbotWorld, host: FakeHost): void {
-  world.onEventsSettled(host.events, 'delivered');
+  deliverForCore(world, host, [...host.events]);
+}
+
+/** 与目标宿主一致：入库、投递阶段、只通知各 World 自己的事件。 */
+function deliverForCore(world: AstrbotWorld, host: FakeHost, events: EventEnvelope[]): void {
+  const stored = events.map(event => {
+    if (host.events.includes(event)) return event;
+    const full = { ...event, cursor: host.events.length + 1, ts: event.ts ?? new Date().toISOString() };
+    host.events.push(full);
+    return full;
+  });
+  world.onRunPhase({ state: 'delivering', running: [], enteredAt: new Date().toISOString() });
+  const own = stored.filter(event => event.source === world.id);
+  if (own.length) world.onEventsSettled(own, 'delivered');
+  world.onRunPhase({ state: 'model', running: [], enteredAt: new Date().toISOString() });
 }
 
 /** 一条群消息。 */
@@ -483,8 +497,8 @@ describe('发消息工具', () => {
   } as unknown as import('cortico/core/types.ts').EventEnvelope;
 
   it('同一批里同时有 QQ 和桌宠消息时，QQ 出口关闭', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
-    world.onEventsSettled([qqEvent, desktopEvent], 'delivered');
+    const { driver, world, host } = await mount({ mode: 'all' });
+    deliverForCore(world, host, [qqEvent, desktopEvent]);
     const out = await handlerOf(world, 'astrbot_send_message')({ text: '你好' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
     expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
@@ -495,7 +509,7 @@ describe('发消息工具', () => {
     driver.emitMessage(groupMsg());
     await Promise.resolve();
     settle(world, host);
-    world.onEventsSettled([desktopEvent], 'delivered');
+    deliverForCore(world, host, [desktopEvent]);
 
     const out = await handlerOf(world, 'astrbot_send_message')({ text: '桌宠里说的话' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
@@ -568,8 +582,8 @@ describe('发消息工具', () => {
   });
 
   it('桌宠在前、QQ 在后也算混合，不发 QQ', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
-    world.onEventsSettled([desktopEvent, qqEvent], 'delivered');
+    const { driver, world, host } = await mount({ mode: 'all' });
+    deliverForCore(world, host, [desktopEvent, qqEvent]);
     const out = await handlerOf(world, 'astrbot_send_message')({ text: '你好' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
     expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
@@ -1445,16 +1459,147 @@ describe('QQ 扩展不接管本地回复出口', () => {
     ['desktop-live2d-pet.message', 'desktop-live2d-pet', 'chat', 'external'],
     ['console.message', 'console', 'chat', 'internal'],
   ])('%s / %s / %s / %s 不继承 QQ 出口，也不被重定向到指定桌宠', async (type, source, via, origin) => {
-    const { driver, world } = await mount({ mode: 'all' });
-    world.onEventsSettled([humanEvent('before-local')], 'delivered');
-    world.onEventsSettled([{
+    const { driver, world, host } = await mount({ mode: 'all' });
+    deliverForCore(world, host, [humanEvent('before-local')]);
+    deliverForCore(world, host, [{
       type, source, origin, text: '本地对话', meta: { via, text: '本地对话' },
-    } as unknown as EventEnvelope], 'delivered');
+    } as unknown as EventEnvelope]);
     const out = await toolHandler(world, 'astrbot_send_message')({ text: '答复' }, toolCtx());
     const text = typeof out === 'string' ? out : out.text;
     expect(driver.sent).toHaveLength(0);
     expect(text).toContain('沿用来源 World');
     expect(text).not.toMatch(/\b(?:pet_say|live2d_pet_say|console_send)\b/);
+  });
+
+  it.each(['local-first', 'qq-first'])('宿主按 source 分发时仍拒绝混合输入：%s', async order => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    driver.ownerIds = ['100000001'];
+    const local = petEvent(), qq = humanEvent();
+    deliverForCore(world, host, order === 'local-first' ? [local, qq] : [qq, local]);
+    const out = await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不能借主人身份');
+  });
+
+  it('模型生成期间新来本地输入，即使尚未投递也先关闭旧 QQ 身份', async () => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    deliverForCore(world, host, [humanEvent()]);
+    await host.pushEvent({ ...petEvent(), ts: new Date().toISOString() });
+    const before = JSON.stringify(host.events);
+    const out = await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不能借主人身份');
+    expect(JSON.stringify(host.events)).toBe(before);
+  });
+
+  it('只读扫描不把自身记录、活动记录和内部状态当成本地用户输入', async () => {
+    const { driver, world, host } = await mount();
+    deliverForCore(world, host, [humanEvent()]);
+    for (const event of [
+      { source: 'desktop-pet', type: 'desktop-pet.self', origin: 'external' },
+      { source: 'desktop-pet', type: 'desktop-pet.status', origin: 'external', meta: { kind: 'activity' } },
+      { source: 'console', type: 'console.status', origin: 'internal' },
+      { source: 'other', type: 'other.message', origin: 'external', contextDelivery: 'archive-only' },
+    ]) await host.pushEvent({ ...event, ts: new Date().toISOString(), text: '' } as EventEnvelope);
+    await toolHandler(world, 'astrbot_send_message')({ text: 'QQ 答复' }, toolCtx());
+    expect(driver.sent).toHaveLength(1);
+  });
+
+  it('混合轮次结束后的独立 QQ 消息可以重新建立 QQ 出口', async () => {
+    const { driver, world, host } = await mount();
+    deliverForCore(world, host, [humanEvent(), petEvent()]);
+    world.onTurnEnded();
+    deliverForCore(world, host, [humanEvent('next')]);
+    await toolHandler(world, 'astrbot_send_message')({ text: 'QQ 答复' }, toolCtx());
+    expect(driver.sent).toHaveLength(1);
+  });
+
+  it('本地消息在旧轮次结束前排队，idle 不跳过其扫描水位', async () => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    deliverForCore(world, host, [humanEvent()]);
+    const local = await host.pushEvent({ ...petEvent(), ts: new Date().toISOString() });
+    world.onTurnEnded();
+    world.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
+    deliverForCore(world, host, [local, humanEvent('next')]);
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it('状态查询不能消耗尚未投递的本地输入水位', async () => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    const local = await host.pushEvent({ ...petEvent(), ts: new Date().toISOString() });
+    await toolHandler(world, 'astrbot_status')({}, toolCtx());
+    deliverForCore(world, host, [local, humanEvent()]);
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it.each([false, true])('提前拒绝 pending 控制台后，其混合投递仍拒绝 QQ 身份（idle=%s）', async idle => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    deliverForCore(world, host, [humanEvent('q1')]);
+    const local = await host.pushEvent({ source: 'console', type: 'console.message', origin: 'internal', ts: new Date().toISOString(), text: '本地输入' });
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    if (idle) {
+      world.onTurnEnded();
+      world.onRunPhase({ state: 'idle', running: [], enteredAt: new Date().toISOString() });
+    }
+    deliverForCore(world, host, [local, humanEvent('q2')]);
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it('投递期间晚到的本地消息不能被 QQ 通知钩子消耗掉', async () => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    deliverForCore(world, host, [humanEvent('q1')]);
+    world.onRunPhase({ state: 'delivering', running: [], enteredAt: new Date().toISOString() });
+    const local = await host.pushEvent({ ...petEvent(), ts: new Date().toISOString() });
+    const notice = await host.pushEvent({ ...toolNoticeEvent(), ts: new Date().toISOString() });
+    world.onEventsSettled([notice], 'delivered');
+    world.onRunPhase({ state: 'model', running: [], enteredAt: new Date().toISOString() });
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    world.onTurnEnded();
+    deliverForCore(world, host, [local, humanEvent('q2')]);
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it('前一批已取走后入库的下一批本地消息，不能被前一批推进水位', async () => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    const q1 = await host.pushEvent({ ...humanEvent('q1'), ts: new Date().toISOString() });
+    const local = await host.pushEvent({ source: 'console', type: 'console.message', origin: 'internal', text: '本地输入', ts: new Date().toISOString() });
+    const q2 = await host.pushEvent({ ...humanEvent('q2'), ts: new Date().toISOString() });
+    deliverForCore(world, host, [q1]);
+    world.onTurnEnded();
+    deliverForCore(world, host, [local, q2]);
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it('启动前已入库但待补投的本地消息，不能被当作已结束的历史', async () => {
+    const host = new FakeHost(), driver = new FakeDriver();
+    driver.connected = true;
+    const local = await host.pushEvent({ ...petEvent(), ts: new Date().toISOString() });
+    const world = new AstrbotWorld({ cfg: config({ ownerId: '100000001' }), timezone: 'Asia/Shanghai', driver });
+    await world.start(host);
+    deliverForCore(world, host, [local, humanEvent('after-start')]);
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it('扫描超限或读取失败时拒绝沿用 QQ 身份', async () => {
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
+    deliverForCore(world, host, [humanEvent()]);
+    for (let i = 0; i < 513; i++) {
+      await host.pushEvent({ source: 'core', type: 'core.status', origin: 'internal', text: '', ts: new Date().toISOString() });
+    }
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
+    world.onTurnEnded();
+    deliverForCore(world, host, [humanEvent('next')]);
+    host.store.range = () => { throw new Error('test store failure'); };
+    await host.pushEvent({ ...petEvent(), ts: new Date().toISOString() });
+    await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
+    expect(driver.toolCalls).toHaveLength(0);
   });
 });
 
@@ -1470,8 +1615,8 @@ describe('轮次判定：通知不建立也不污染 QQ 轮次', () => {
   });
 
   it('[人话, 桌宠] 仍算 mixed，QQ 出口关闭', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
-    world.onEventsSettled([humanEvent(), petEvent()], 'delivered');
+    const { driver, world, host } = await mount({ mode: 'all' });
+    deliverForCore(world, host, [humanEvent(), petEvent()]);
 
     const out = await toolHandler(world, 'astrbot_send_message')({ text: '你好' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
@@ -1501,9 +1646,9 @@ describe('轮次判定：通知不建立也不污染 QQ 轮次', () => {
   });
 
   it('纯桌宠批次清空上一轮 QQ 出口', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
-    world.onEventsSettled([humanEvent()], 'delivered');
-    world.onEventsSettled([petEvent()], 'delivered');
+    const { driver, world, host } = await mount({ mode: 'all' });
+    deliverForCore(world, host, [humanEvent()]);
+    deliverForCore(world, host, [petEvent()]);
 
     const out = await toolHandler(world, 'astrbot_send_message')({ text: '桌宠里说的话' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
@@ -1528,9 +1673,9 @@ describe('工具身份：mixed / 过期轮次不得回退 owner', () => {
   });
 
   it('mixed 轮次不借主人身份', async () => {
-    const { driver, world } = await mount({ ownerId: '100000001' });
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
     driver.ownerIds = ['100000001'];
-    world.onEventsSettled([humanEvent(), petEvent()], 'delivered');
+    deliverForCore(world, host, [humanEvent(), petEvent()]);
 
     const out = await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls).toHaveLength(0);
@@ -1599,10 +1744,10 @@ describe('工具身份：mixed / 过期轮次不得回退 owner', () => {
   });
 
   it('QQ 轮次后紧跟纯桌宠批次（没有 onTurnEnded）：清空后走 owner', async () => {
-    const { driver, world } = await mount({ ownerId: '100000001' });
+    const { driver, world, host } = await mount({ ownerId: '100000001' });
     driver.ownerIds = ['100000001'];
-    world.onEventsSettled([humanEvent('m42')], 'delivered');
-    world.onEventsSettled([petEvent()], 'delivered');
+    deliverForCore(world, host, [humanEvent('m42')]);
+    deliverForCore(world, host, [petEvent()]);
 
     await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls[0]?.turn).toBe('');

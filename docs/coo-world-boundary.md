@@ -22,7 +22,7 @@
 
 ### Coo 控制台与 AstrBot webchat
 
-- Coo `console.message` 是 Coo 自己的控制台输入，宿主标记 `origin: internal`；它应清空旧 QQ 出口，不能因为不是 external 就忽略。
+- Coo `console.message` 是 Coo 自己的控制台输入，宿主标记 `origin: internal`。宿主的 `onEventsSettled` 只通知事件所属 World；本包通过只读事件库和投递阶段检查它，关闭旧 QQ 出口，不能等待控制台事件回调到 AstrBot。
 - AstrBot `webchat` 是另一个服务的对话页，不要与 Coo 控制台或桌宠聊天页混同。
 - 桥只处理 UMO 第一段在 `bridge_platforms` 中的事件。
 
@@ -36,4 +36,5 @@
 ## 已知限制
 
 - 同一会话里其他 World 的工具可能仍然可见，本包不重写或移除它们。提示词收窄并不能代替真实实例中的跨入口回归验证。
+- 跨来源输入按游标扫描，启动前历史不参与；发送及身份借用前再检查。扫描超出 512 个事件或读取失败时保守拒绝 QQ 发送，不改写其他来源的记录。
 - 此前把聊天页空白直接归因于宿主缺陷的结论未经启停扩展对照，不作为发布依据；宿主热修已撤回。

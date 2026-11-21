@@ -272,7 +272,7 @@ private turnChannelAt = 0;
 ### 5.3 桌宠/控制台
 
 - `astrbot_send_message` 不允许从桌宠/控制台轮次调用，显式 `conv_id` 也不能绕过。
-- desktop-pet 用 `pet_say`/`pet_ask`；console 用 assistant 文本。
+- 非 QQ 输入沿用来源 World 的回复规则；本包不为 desktop-pet、Live2D 或 console 指定发言工具。
 - `astrbot_call_tool` 在 Coo 对话轮次可以走 owner actor，前提是连接页填了主人 QQ 且该号在 AstrBot 管理员名单里。
 
 ---
