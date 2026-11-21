@@ -1860,6 +1860,18 @@ describe('主动发送与 @', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('桥还没见过这个会话');
   });
 
+  it('重启后由桥恢复的会话，可以直接主动发送', async () => {
+    const { driver, world } = await mount({ mode: 'all', ownerId: OWNER });
+    driver.ownerIds = [OWNER];
+    driver.emitReady([OWNER_PRIVATE, SEEN_GROUP]);
+    await toolHandler(world, 'astrbot_send_message')(
+      { text: '我回来了', conv_kind: 'private', conv_id: OWNER },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv.umo).toBe(OWNER_PRIVATE.umo);
+  });
+
   it('QQ 轮次照旧可以隐式回触发会话，并带上 at', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage({ ...groupMsg({ id: 'g2', text: '在吗' }), umo: SEEN_GROUP.umo, conv: SEEN_GROUP });

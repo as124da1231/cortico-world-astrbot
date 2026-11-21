@@ -428,6 +428,14 @@ export class AstrbotWorld implements World {
     driver.onMessage((msg) => {
       void this.onBridgeMessage(msg);
     });
+    // 桥会带上它记得的会话（含重启前恢复的），主动发送要靠这份清单。
+    driver.onReady?.((convs) => {
+      for (const conv of convs) {
+        if (conv.kind !== 'group' && conv.kind !== 'private') continue;
+        if (!conv.id || !conv.umo) continue;
+        this.convs.set(this.convKey(conv), conv);
+      }
+    });
     // 桥在握手后、以及配置变了都会重推这份清单。
     this.toolList = driver.tools;
     this.toolsSeen = false;

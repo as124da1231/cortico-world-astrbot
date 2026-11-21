@@ -151,6 +151,8 @@ export interface BridgeDriver {
   onMessage(cb: (m: BridgeMessage) => void): void;
   onNotice(cb: (n: BridgeNotice) => void): void;
   onState(cb: (connected: boolean) => void): void;
+  /** 桥握手时自报记得的会话（含重启前恢复的），用于主动发送。 */
+  onReady?(cb: (convs: Conv[]) => void): void;
   /** 工具清单变了（握手后下发，或管理页保存后重推）。 */
   onTools(cb: (tools: ToolInfo[]) => void): void;
   start(): Promise<void>;
@@ -250,6 +252,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   private noticeCbs: Array<(n: BridgeNotice) => void> = [];
   private stateCbs: Array<(connected: boolean) => void> = [];
   private toolsCbs: Array<(tools: ToolInfo[]) => void> = [];
+  private readyCbs: Array<(convs: Conv[]) => void> = [];
   /** 工具调用等确认，超时按失败回执。 */
   private pendingTools = new Map<
     string,
@@ -287,6 +290,10 @@ export class AstrbotBridgeDriver implements BridgeDriver {
 
   onTools(cb: (tools: ToolInfo[]) => void): void {
     this.toolsCbs.push(cb);
+  }
+
+  onReady(cb: (convs: Conv[]) => void): void {
+    this.readyCbs.push(cb);
   }
 
   /** 调一个桥那边启用的工具。未连接、超时或被拒都返回 ok:false。 */
@@ -723,6 +730,20 @@ export class AstrbotBridgeDriver implements BridgeDriver {
         owners: this.ownerIds.length,
         tts: this.tts,
       });
+      const convs: Conv[] = [];
+      if (Array.isArray(frame.conversations)) {
+        for (const raw of frame.conversations) {
+          if (!raw || typeof raw !== 'object') continue;
+          const r = raw as Record<string, unknown>;
+          const kind = r.kind === 'group' || r.kind === 'private' ? r.kind : undefined;
+          const id = r.id === undefined || r.id === null ? '' : String(r.id).trim();
+          const umo = typeof r.umo === 'string' ? r.umo.trim() : '';
+          if (!kind || !id || !umo) continue;
+          const name = typeof r.name === 'string' && r.name.trim() ? r.name.trim() : undefined;
+          convs.push({ kind, id, umo, ...(name ? { name } : {}) });
+        }
+      }
+      for (const cb of this.readyCbs) cb(convs);
       // 首个 ready 才算真正连上；此时才把重连退避收回初始值。
       this.backoffMs = this.opts.reconnectBaseMs ?? 1000;
       return;

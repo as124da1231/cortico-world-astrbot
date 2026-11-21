@@ -124,6 +124,7 @@ export class FakeDriver implements BridgeDriver {
   private noticeCbs: Array<(n: BridgeNotice) => void> = [];
   private stateCbs: Array<(connected: boolean) => void> = [];
   private toolsCbs: Array<(tools: ToolInfo[]) => void> = [];
+  private readyCbs: Array<(convs: Conv[]) => void> = [];
 
   onMessage(cb: (m: BridgeMessage) => void): void {
     this.messageCbs.push(cb);
@@ -136,6 +137,9 @@ export class FakeDriver implements BridgeDriver {
   }
   onTools(cb: (tools: ToolInfo[]) => void): void {
     this.toolsCbs.push(cb);
+  }
+  onReady(cb: (convs: Conv[]) => void): void {
+    this.readyCbs.push(cb);
   }
   async callTool(
     name: string,
@@ -183,5 +187,9 @@ export class FakeDriver implements BridgeDriver {
   emitTools(tools: ToolInfo[]): void {
     this.tools = tools;
     for (const cb of this.toolsCbs) cb(tools);
+  }
+  /** 测试入口：模拟桥握手时自报记得的会话。 */
+  emitReady(convs: Conv[]): void {
+    for (const cb of this.readyCbs) cb(convs);
   }
 }
