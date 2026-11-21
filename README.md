@@ -209,7 +209,7 @@ corepack pnpm add cortico-world-astrbot
   "image": { "mime": "image/jpeg", "base64": "…" } }
 ```
 
-- **`umo` 必填**；`conv` 只是投影。World 在发帧前就会检查：当前不是 QQ 轮次、轮次已过期、或显式目标找不到带 UMO 的已知会话，都直接中文拒绝，不发帧。
+- **`umo` 必填**；`conv` 只是投影。World 在发帧前就会检查：QQ 轮次已过期、非 QQ 轮次没填主人 QQ 或没给明确目标、显式目标找不到带 UMO 的已知会话，都直接中文拒绝，不发帧。
 - `conv.kind` 取 `group` 或 `private`。`text` 与 `image` 至少给一个；`voice: true` 需要正文，且不能和 `image` 同时用。
 - 发送只允许到桥已经见过的会话；找不到会回「桥还没见过这个会话（没有 UMO）」。
 
@@ -252,7 +252,7 @@ corepack pnpm add cortico-world-astrbot
 
 工具错误码（`tool-ack.error`）：`missing_identity`、`ambiguous_identity`、`bad_actor`（桥层拒绝），以及 `tool_failed`（工具本身抛错，原文只进插件日志）。插件还会用中文 `note` 说明：桥未启用、这一轮的消息已过期、没有在 `tools_allow` 里、工具不存在、主人号不在管理员名单、主人事件构造失败等。
 
-World 侧还有自己的本地校验，不会把帧发出去：这一轮不是 QQ 事件、QQ 轮次已过期、`conv_id` 不是字符串或数字、显式目标没有 UMO。
+World 侧还有自己的本地校验，不会把帧发出去：QQ 轮次已过期、非 QQ 轮次没有主人 QQ 或没有明确目标、`conv_id` 不是字符串或数字、显式目标没有 UMO、`at` 不是数字 QQ 号或超过 10 个。
 
 ## 开发
 

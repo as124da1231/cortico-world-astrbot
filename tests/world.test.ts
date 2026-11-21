@@ -437,11 +437,10 @@ describe('发消息工具', () => {
     world.onTurnEnded();
     const out = await handlerOf(world, 'astrbot_send_message')({ text: '去群里说' }, toolCtx());
     expect(driver.sent).toHaveLength(0);
-    expect(typeof out === 'string' ? out : out.text).toContain('沿用来源 World 的回复方式');
-    expect(typeof out === 'string' ? out : out.text).not.toContain('pet_say');
+    expect(typeof out === 'string' ? out : out.text).toContain('必须用 conv_id 或 reply_to');
   });
 
-  it('桌宠轮次显式给 conv_id 也不能发到 QQ', async () => {
+  it('非 QQ 轮次显式给 conv_id，但没有主人 QQ 时拒绝', async () => {
     const { driver, world } = await mount({ mode: 'all' });
     world.onTurnEnded();
     const out = await handlerOf(world, 'astrbot_send_message')(
@@ -450,7 +449,7 @@ describe('发消息工具', () => {
     );
     expect(driver.sent).toHaveLength(0);
     expect(typeof out === 'string' ? false : out.failed).toBe(true);
-    expect(typeof out === 'string' ? out : out.text).toContain('不是 QQ 消息');
+    expect(typeof out === 'string' ? out : out.text).toContain('先在「连接」里填主人 QQ');
   });
 
   it('回复默认带上 UMO，发送端以 UMO 为主键', async () => {
@@ -1720,3 +1719,160 @@ describe('历史与提示词（W-006 / W-015 / W-016）', () => {
     expect(CALL_TOOL_DECL.description).toContain('say so honestly');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 主动发送与 @：非 QQ 轮次在主人授权下，按明确目标发送
+// ---------------------------------------------------------------------------
+
+const SEEN_GROUP = {
+  kind: 'group' as const,
+  id: '123456',
+  name: '测试群',
+  umo: 'default:GroupMessage:123456',
+};
+const OWNER = '100000001';
+const OWNER_PRIVATE = {
+  kind: 'private' as const,
+  id: OWNER,
+  umo: `default:FriendMessage:${OWNER}`,
+};
+
+/** 桥见过主人的私聊和一个群，然后结束 QQ 轮次，进入非 QQ 轮次。 */
+async function seenBridge(patch: Partial<AstrbotConfigSection> = {}) {
+  const mounted = await mount({ mode: 'all', ownerId: OWNER, ...patch });
+  mounted.driver.ownerIds = [OWNER];
+  mounted.driver.emitMessage({
+    id: 'p1', umo: OWNER_PRIVATE.umo, conv: OWNER_PRIVATE,
+    sender: { id: OWNER, name: '主人' }, text: '在吗', mentioned: true, owner: true,
+  });
+  mounted.driver.emitMessage({
+    id: 'g1', umo: SEEN_GROUP.umo, conv: SEEN_GROUP,
+    sender: { id: '42', name: '群友' }, text: '群里说话', mentioned: true,
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  mounted.world.onTurnEnded();
+  return mounted;
+}
+
+describe('主动发送与 @', () => {
+  it('非 QQ 轮次：主人 + 明确目标 + 桥见过的群，可以发', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '帮你转告', conv_kind: 'group', conv_id: '123456' },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.conv.umo).toBe(SEEN_GROUP.umo);
+    expect(typeof out === 'string' ? out : out.text).toContain('已发到群');
+  });
+
+  it('群里可以 @ 指定的人，参数透传给桥', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '集合', conv_kind: 'group', conv_id: '123456', at: ['123456789'] },
+      toolCtx(),
+    );
+    expect(driver.sent[0]?.at).toEqual(['123456789']);
+    expect(typeof out === 'string' ? out : out.text).toContain('@了 1 人');
+  });
+
+  it('私聊里的 at 被忽略，但消息照发', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '私聊里说', conv_kind: 'private', conv_id: OWNER, at: ['123456789'] },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(1);
+    expect(driver.sent[0]?.at).toBeUndefined();
+    expect(typeof out === 'string' ? out : out.text).toContain('私聊里 @ 不生效');
+  });
+
+  it('@全体默认关闭', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '通知', conv_kind: 'group', conv_id: '123456', at: ['all'] },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('@全体成员没有开启');
+  });
+
+  it('开启后允许 @全体，并只发一个 all', async () => {
+    const { driver, world } = await seenBridge({ allowAtAll: true });
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '通知', conv_kind: 'group', conv_id: '123456', at: ['all', '123456789'] },
+      toolCtx(),
+    );
+    expect(driver.sent[0]?.at).toEqual(['all']);
+    expect(typeof out === 'string' ? out : out.text).toContain('全体成员');
+  });
+
+  it('at 只接受数字 QQ 号', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '你好', conv_kind: 'group', conv_id: '123456', at: ['小明'] },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('只接受数字');
+  });
+
+  it('at 最多 10 个', async () => {
+    const { driver, world } = await seenBridge();
+    const at = Array.from({ length: 11 }, (_, i) => String(100000000 + i));
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '你好', conv_kind: 'group', conv_id: '123456', at },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('最多 @ 10 人');
+  });
+
+  it('语音和 @ 不能同一条', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '你好', voice: true, conv_kind: 'group', conv_id: '123456', at: ['123456789'] },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('语音和 @ 不能');
+  });
+
+  it('主人 QQ 不在管理员名单时拒绝', async () => {
+    const { driver, world } = await seenBridge();
+    driver.ownerIds = ['999999'];
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '你好', conv_kind: 'group', conv_id: '123456' },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('不在 AstrBot 的管理员名单');
+  });
+
+  it('桥没见过的会话不发', async () => {
+    const { driver, world } = await seenBridge();
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '你好', conv_kind: 'group', conv_id: '555555' },
+      toolCtx(),
+    );
+    expect(driver.sent).toHaveLength(0);
+    expect(typeof out === 'string' ? out : out.text).toContain('桥还没见过这个会话');
+  });
+
+  it('QQ 轮次照旧可以隐式回触发会话，并带上 at', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage({ ...groupMsg({ id: 'g2', text: '在吗' }), umo: SEEN_GROUP.umo, conv: SEEN_GROUP });
+    await Promise.resolve();
+    settle(world, host);
+    const out = await toolHandler(world, 'astrbot_send_message')(
+      { text: '收到', at: ['123456789'] },
+      toolCtx(),
+    );
+    expect(driver.sent[0]?.conv.umo).toBe(SEEN_GROUP.umo);
+    expect(driver.sent[0]?.at).toEqual(['123456789']);
+    expect(typeof out === 'string' ? out : out.text).toContain('已发到群');
+  });
+});
+
+

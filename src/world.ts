@@ -63,6 +63,45 @@ function clampInt(raw: unknown, fallback: number, min: number, max: number): num
   return Math.min(max, Math.max(min, Math.round(n)));
 }
 
+/** 一条消息最多 @ 多少人，避免误触发整群。 */
+export const MENTIONS_MAX = 10;
+
+/**
+ * 解析 `at` 参数。只接受 QQ 号（数字）或 "all"；"all" 需要配置允许。
+ * 返回错误原因而不是抛错。
+ */
+function parseMentions(
+  raw: unknown,
+  allowAll: boolean,
+): { ok: true; list: string[] } | { ok: false; reason: string } {
+  if (raw === undefined || raw === null) return { ok: true, list: [] };
+  if (!Array.isArray(raw)) return { ok: false, reason: 'at 必须是 QQ 号数组，未发送。' };
+  if (raw.length === 0) return { ok: true, list: [] };
+  if (raw.length > MENTIONS_MAX) {
+    return { ok: false, reason: `一条消息最多 @ ${MENTIONS_MAX} 人，未发送。` };
+  }
+  const list: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string' && typeof item !== 'number') {
+      return { ok: false, reason: 'at 里只能是 QQ 号或 "all"，未发送。' };
+    }
+    const value = String(item).trim();
+    if (value === 'all') {
+      if (!allowAll) {
+        return { ok: false, reason: '@全体成员没有开启：先在「连接」里打开「允许 @全体成员」。' };
+      }
+      list.push('all');
+      continue;
+    }
+    if (!/^\d{5,20}$/.test(value)) {
+      return { ok: false, reason: `「${value}」不是 QQ 号，at 只接受数字，未发送。` };
+    }
+    list.push(value);
+  }
+  // @全体 已覆盖所有人，再列其他人没有意义。
+  return { ok: true, list: list.includes('all') ? ['all'] : [...new Set(list)] };
+}
+
 export interface AstrbotWorldOptions {
   /** `worlds.astrbot` 的活引用：热改的键现读即生效。 */
   cfg: AstrbotConfigSection;
@@ -84,12 +123,13 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       'way to speak on QQ: lines starting with 【QQ群 …】 or 【QQ私聊 …】 are QQ messages and ' +
       'can be answered with this tool. This tool only controls QQ delivery; it does not ' +
       'select or replace the reply tools of local chat, desktop pets, or other Worlds. ' +
+      'In a QQ turn you may omit conv_id to reply where that turn came from. Outside a QQ turn ' +
+      'the owner (the admin QQ set on the connection page) may send on purpose, but only with ' +
+      'an explicit conv_id or reply_to, and only to a conversation the bridge has already seen. ' +
       'Text, an image, or both. Set voice=true to speak a short text reply out loud ' +
       '(TTS; falls back to text if the bridge has no TTS). ' +
-      'Only in a QQ turn: omit conv_id to reply in the conversation this turn came from. ' +
-      'Without a QQ event in this turn it refuses, so wait for a QQ message instead of ' +
-      'guessing. The bridge can only deliver to a conversation it has already seen, so ' +
-      'an unknown conversation fails with a reason.',
+      'In a group, at takes QQ numbers to mention (max 10); at=["all"] mentions everyone only ' +
+      'when the connection page allows it, and is ignored in private chats.',
     tags: ['write'],
     parameters: {
       type: 'object',
@@ -121,6 +161,14 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         reply_to: {
           type: 'string',
           description: 'Optional bridge message id to quote as a reply.',
+        },
+        at: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 10,
+          description:
+            'Group only. QQ numbers to mention, for example ["123456789"]; "all" mentions ' +
+            'everyone when the connection page allows it. Ignored in private chats.',
         },
       },
       required: [],
@@ -837,18 +885,43 @@ export class AstrbotWorld implements World {
         if (voice && !text) return { text: '语音需要正文，未发送。', failed: true };
         if (voice && handle) return { text: '语音和图片不能是同一条消息，未发送。', failed: true };
 
-        // 渠道硬校验：只有当前这一轮确实是 QQ 人话事件时，才允许用 QQ 出口。
-        // 显式 conv_id 也不能绕过；非 QQ 输入由来源 World 自己处理。
+        // 目标：QQ 轮次可以省略，回触发会话；其他轮次必须显式指定。
+        const explicitTarget =
+          (typeof args.conv_id === 'string' && args.conv_id.trim() !== '')
+          || (typeof args.conv_id === 'number' && Number.isFinite(args.conv_id))
+          || (typeof args.reply_to === 'string' && args.reply_to.trim() !== '');
+
+        // 渠道校验：
+        // - QQ 轮次：可以隐式回触发会话；
+        // - 非 QQ 轮次：只有配置了主人 QQ，且目标是桥见过的会话，才允许主动发送。
         const qqTurn = this.qqTurnActive();
         if (!qqTurn) {
-          const why = this.turnExpired()
-            ? '本轮 QQ 消息已过期，QQ 出口已关闭；等 QQ 那边有人说话再回。'
-            : '这一轮不是 QQ 消息；astrbot_send_message 只用于当前 QQ 事件，' +
-              '非 QQ 消息请沿用来源 World 的回复方式，本扩展不更换回复工具。';
-          this.host?.log.warn('QQ 出口被拒：这一轮不是 QQ 事件', {
-            expired: this.turnExpired(),
-          });
-          return { text: why, failed: true };
+          if (this.turnExpired()) {
+            return {
+              text: '本轮 QQ 消息已过期，QQ 出口已关闭；等 QQ 那边有人说话再回。',
+              failed: true,
+            };
+          }
+          if (!explicitTarget) {
+            return {
+              text: '这一轮不是 QQ 消息。要主动发 QQ，必须用 conv_id 或 reply_to 指定目标会话。',
+              failed: true,
+            };
+          }
+          const ownerId = String(this.opts.cfg.ownerId ?? '').trim();
+          if (!ownerId) {
+            return {
+              text: '要主动发 QQ，先在「连接」里填主人 QQ（必须是 AstrBot 的管理员）。',
+              failed: true,
+            };
+          }
+          const admins = this.driver?.ownerIds ?? [];
+          if (admins.length > 0 && !admins.includes(ownerId)) {
+            return {
+              text: `主人 QQ ${ownerId} 不在 AstrBot 的管理员名单里，消息没有发出。`,
+              failed: true,
+            };
+          }
         }
 
         const driver = this.driver;
@@ -865,12 +938,23 @@ export class AstrbotWorld implements World {
         const conv = picked.conv;
         if (!conv) {
           return {
-            text: this.turnMultiConv
-              ? '这一轮有多个 QQ 会话（私聊和群）。请用 conv_id 或 reply_to 指定回哪个，不要猜。'
-              : '还不知道发到哪个会话：没有指定 conv_id，也还没有收到过消息。',
+            text: !qqTurn
+              ? '主动发送必须指定目标会话：用 conv_id（群号或 QQ 号）或 reply_to。'
+              : this.turnMultiConv
+                ? '这一轮有多个 QQ 会话（私聊和群）。请用 conv_id 或 reply_to 指定回哪个，不要猜。'
+                : '还不知道发到哪个会话：没有指定 conv_id，也还没有收到过消息。',
             failed: true,
           };
         }
+
+        const at = parseMentions(args.at, this.opts.cfg.allowAtAll === true);
+        if (!at.ok) return { text: at.reason, failed: true };
+        if (voice && at.list.length > 0) {
+          return { text: '语音和 @ 不能是同一条消息，未发送。', failed: true };
+        }
+        // @ 只在群里有效；私聊里忽略并说明，不因此整条失败。
+        const mention = conv.kind === 'group' ? at.list : [];
+        const atNote = conv.kind !== 'group' && at.list.length > 0 ? '（私聊里 @ 不生效，已忽略）' : '';
 
         let image: OutgoingImage | undefined;
         if (handle) {
@@ -895,7 +979,7 @@ export class AstrbotWorld implements World {
 
         const replyTo = typeof args.reply_to === 'string' && args.reply_to !== '' ? args.reply_to : undefined;
         this.touchTurn();
-        const result = await driver.send(conv, text, replyTo, image, voice);
+        const result = await driver.send(conv, text, replyTo, image, voice, mention);
         // 发送本身耗时不该把这一轮挤到过期；开始时就 active 才续期。
         if (qqTurn) this.turnChannelAt = Date.now();
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
@@ -917,7 +1001,10 @@ export class AstrbotWorld implements World {
             ? '已把图片发到'
             : '已发到';
         const note = result.note ? `（${result.note}）` : '';
-        return { text: `${what}${where}。${note}` };
+        const atPart = mention.length > 0
+          ? `，@了 ${mention.includes('all') ? '全体成员' : `${mention.length} 人`}`
+          : '';
+        return { text: `${what}${where}${atPart}。${note}${atNote}` };
       },
     };
   }

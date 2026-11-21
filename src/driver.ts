@@ -155,7 +155,7 @@ export interface BridgeDriver {
   onTools(cb: (tools: ToolInfo[]) => void): void;
   start(): Promise<void>;
   stop(): Promise<void>;
-  send(conv: Conv, text: string, replyTo?: string, image?: OutgoingImage, voice?: boolean): Promise<SendResult>;
+  send(conv: Conv, text: string, replyTo?: string, image?: OutgoingImage, voice?: boolean, at?: readonly string[]): Promise<SendResult>;
   /** 调一个桥那边启用的工具；turn 是触发这一轮的消息 id。 */
   callTool(
     name: string,
@@ -365,7 +365,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
    * 发一条消息给指定会话。未连接、超时或被桥拒绝都返回 { ok:false }，
    * 由 World 把它写成失败回执，不抛错。
    */
-  send(conv: Conv, text: string, replyTo?: string, image?: OutgoingImage, voice?: boolean): Promise<SendResult> {
+  send(conv: Conv, text: string, replyTo?: string, image?: OutgoingImage, voice?: boolean, at?: readonly string[]): Promise<SendResult> {
     if (conv.umo) {
       const parsed = parseUmo(conv.umo);
       if (!parsed) return Promise.resolve({ ok: false, error: 'invalid_umo' });
@@ -403,6 +403,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
         text,
       };
       if (replyTo) frame.replyTo = replyTo;
+      if (at && at.length > 0) frame.at = [...at];
       if (image) frame.image = { mime: image.mime, base64: image.base64 };
       if (voice) frame.voice = true;
       try {

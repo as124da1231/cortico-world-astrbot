@@ -109,7 +109,7 @@ export class FakeDriver implements BridgeDriver {
   stopped = 0;
   /** 模拟「连接一直不返回」：start 永不 resolve。 */
   startHangs = false;
-  sent: Array<{ conv: Conv; text: string; replyTo?: string; image?: OutgoingImage; voice?: boolean }> = [];
+  sent: Array<{ conv: Conv; text: string; replyTo?: string; image?: OutgoingImage; voice?: boolean; at?: readonly string[] }> = [];
   sendResult: SendResult = { ok: true };
   /** 工具调用记录，测试用来断言 name / args / turn。 */
   toolCalls: Array<{
@@ -160,8 +160,9 @@ export class FakeDriver implements BridgeDriver {
     replyTo?: string,
     image?: OutgoingImage,
     voice?: boolean,
+    at?: readonly string[],
   ): Promise<SendResult> {
-    this.sent.push({ conv, text, replyTo, image, voice });
+    this.sent.push({ conv, text, replyTo, image, voice, ...(at && at.length ? { at } : {}) });
     return this.sendResult;
   }
 

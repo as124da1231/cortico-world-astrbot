@@ -26,6 +26,8 @@ export interface AstrbotConfigSection {
    * 留空表示 Coo 轮次不借工具身份；AstrBot 的管理员名单仍是唯一权限来源。
    */
   ownerId: string;
+  /** 允许用 at=["all"] @全体；默认关闭，避免误触发整群。 */
+  allowAtAll: boolean;
 
   /**
    * @deprecated 由 AstrBot 插件控制；仅保留旧配置读取，World 不再使用。
@@ -70,6 +72,7 @@ export const ASTRBOT_DEFAULTS: AstrbotConfigSection = {
   reconnectMaxMs: 30_000,
   channelHint: true,
   ownerId: '',
+  allowAtAll: false,
   // 旧配置兼容；World 不再读取，实际策略由 AstrBot 插件决定。
   mode: 'mention',
   nameAliases: '',
@@ -143,6 +146,13 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         pattern: '^\\d*$',
         maxLength: 20,
       } as ConfigProperty,
+      'worlds.astrbot.allowAtAll': {
+        type: 'boolean',
+        title: '允许 @全体成员',
+        'x-hot': true,
+        description:
+          '打开后，QQ 群里可以用 at=["all"] @全体成员。默认关闭，避免误触发整群。',
+      },
     },
   },
 };
