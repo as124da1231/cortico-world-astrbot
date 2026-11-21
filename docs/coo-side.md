@@ -8,7 +8,7 @@
 
 | 工具 | 用途 |
 |---|---|
-| `astrbot_send_message` | 往 QQ 发文字、图片、语音；只允许当前 QQ 轮次 |
+| `astrbot_send_message` | 往 QQ 发文字、图片、语音；QQ 轮次可隐式回触发会话，非 QQ 轮次需主人 QQ + 显式目标 + 已知会话；群里可用 `at` |
 | `astrbot_status` | 查看连接、最近会话、工具清单 |
 | `astrbot_read_history` | 读某个会话的历史；默认当前轮，允许回退最近会话 |
 | `astrbot_call_tool` | 调 AstrBot 的工具；QQ 轮次传 `turn`，Coo 对话轮次传 owner actor |
@@ -41,28 +41,25 @@ World 记录：
 
 ```text
 turnChannel     'qq' / undefined
-turnMixed       QQ + 桌宠/控制台等非 AstrBot 渠道混在一批
 turnMultiConv   同一批有多个人话 QQ 会话
 turnConv        当前 QQ 会话
 turnMsgId       当前人话消息 id
 turnChannelAt   置位时间，2 分钟兜底 TTL
 ```
 
-`onEventsSettled` 每批更新一次：
+`onEventsSettled` 每批更新一次（只收本 World 自己的事件）：
 
 ```text
 没有 QQ 消息、只有 astrbot.* 通知   → 保留上一轮，不建立也不清空
-纯桌宠/控制台                       → 清空 QQ 出口
-只有 QQ 通知（撤回/入群/戳一戳）    → 不建立新轮次；和桌宠同批时才清空
+只有 QQ 通知（撤回/入群/戳一戳）    → 不建立新轮次
 只有 QQ 人话                         → 开 QQ 出口
-QQ 人话 + 桌宠/其他                  → turnMixed = true，QQ 出口关闭
-QQ 人话 + 工具清单通知               → 不算 mixed，仍可回复
+QQ 人话 + 工具清单通知               → 仍可回复
 多个人话 QQ 会话                     → turnMultiConv = true，隐式发送拒绝
 ```
 
-只有 `astrbot.message` 里的「人话」能建立轮次；`astrbot.notice`（工具清单、桥状态）与 QQ 通知都不参与。纯通知批次不会建立 QQ 轮次（`turnMsgId` 为空），发送与工具调用都会被拒绝。
+只有 `astrbot.message` 里的「人话」能建立轮次；`astrbot.notice`（工具清单、桥状态）与 QQ 通知都不参与。其他 World 的输入不会进入这个回调，本包也不去读共享事件库推断它们。
 
-`onTurnEnded` / `onRunPhase('idle')` 清空全部状态。TTL 只是 `onTurnEnded` 没来时的兜底；工具调用和发送开始时会 `touchTurn()` 续期，所以 90 秒的长工具链不会被 2 分钟 TTL 误伤。过期后不借上一轮身份，也不回退主人身份。
+`onTurnEnded` / `onRunPhase('idle')` 清空全部状态。TTL 只是 `onTurnEnded` 没来时的兜底；工具调用和发送开始时会 `touchTurn()` 续期，所以 90 秒的长工具链不会被 2 分钟 TTL 误伤。过期后不借上一轮身份，也不回退主人身份。非 QQ 轮次的主动发送不受这个 TTL 影响，但要求主人 QQ + 显式目标 + 已知会话。
 
 ---
 
@@ -130,7 +127,7 @@ Coo 对话轮次
 tool-ack → 模型
 ```
 
-没有 `ownerId` 时 Coo 轮次不借身份，直接告诉 Coo 去填。mixed 或过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。World 侧若已经收到管理员名单，会先检查 `ownerId` 是否在名单里；名单还没到时不拦，由插件最终校验。
+没有 `ownerId` 时 Coo 轮次不借身份，直接告诉 Coo 去填。过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。World 侧若已经收到管理员名单，会先检查 `ownerId` 是否在名单里；名单还没到时不拦，由插件最终校验。
 
 插件侧还会检查：
 

@@ -50,6 +50,8 @@
     "dist",
     "assets",
     "README.md",
+    "CHANGELOG.md",
+    "docs",
     "describe.json",
     "LICENSE"
   ],

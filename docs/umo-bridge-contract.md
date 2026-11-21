@@ -183,13 +183,15 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
   "channelHint": true,
   "reconnectBaseMs": 1000,
   "reconnectMaxMs": 30000,
-  "ownerId": ""
+  "ownerId": "",
+  "allowAtAll": false
 }
 ```
 
 - `enabled` 是挂载开关，默认关闭；**启停只在 Coo 的 World 页**，不在本 World 的面板里。
 - `reconnectBaseMs` / `reconnectMaxMs` 默认 1000 / 30000；token 或版本被桥拒绝时，退避至少 10 秒起步，收到 `ready` 后才恢复初始值。
-- `ownerId` 是 Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；纯数字、20 位以内，留空表示不借身份。
+- `ownerId` 是 Coo 对话轮次调用 AstrBot 工具、以及非 QQ 轮次主动发 QQ 时借用的管理员 QQ；纯数字、20 位以内，留空表示不借身份、也不允许主动发送。
+- `allowAtAll`（1.3.6）默认 `false`，打开后群内才接受 `at: ["all"]`；面板暂无开关，直接改 `config.json`，改完即生效。
 
 ### 5.2 废弃
 
@@ -215,12 +217,17 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 { "t": "ready", "v": 1, "channel": "qq",
   "self": { "id": "…", "name": "…" },
   "admins": ["42"],
-  "tts": { "ready": true, "provider": "edge_tts" } }
+  "tts": { "ready": true, "provider": "edge_tts" },
+  "conversations": [
+    { "key": "default:GroupMessage:123456789", "umo": "default:GroupMessage:123456789",
+      "platform": "default", "kind": "group", "id": "123456789", "name": "…", "age_sec": 12 }
+  ] }
 ```
 
 - 第一帧必须是 `hello`；`v` 必须是 `1`。版本不对 → close `4004`，token 不对 → `4003`，第一帧不是 hello → `4002`。URL 带 token → `4401`，带 Origin → `4403`。
 - token 也可放在 `Authorization: Bearer …`；头和帧都出现时必须一致。
 - `ready` 之前的连接不算就绪。`admins` 是 AstrBot 管理员名单，`tts` 是语音能力（旧版是布尔值，World 两种都认）。
+- `conversations`（1.3.6 起）是桥记得的最近会话，最多 20 条，按 `age_sec` 升序；World 用它支持非 QQ 轮次的主动发送。要发到没列出的会话，先在目标会话说一句。
 
 ### 6.2 收消息
 
@@ -271,6 +278,7 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
   "text": "…",
   "replyTo": "可选的消息id",
   "voice": true,
+  "at": ["123456789"],
   "image": { "mime": "image/jpeg", "base64": "…" }
 }
 ```
@@ -281,7 +289,8 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 - World 只允许发送到**已知 UMO**：显式目标找不到带 UMO 的会话时，World 本地就返回中文原因，不发帧。
 - 如果 `conv` 与 UMO 不一致，返回 `umo_conv_mismatch`。
 - 桥没见过 UMO（或超过 30 天）返回 `unknown_umo`。
-- 只有当前这一轮是 QQ 轮次才能发；桌宠/控制台、mixed、过期轮次一律拒绝，显式 `conv_id` 不能绕过。
+- 发送权限（1.3.6）：QQ 轮次可隐式回触发会话；非 QQ 轮次（桌宠、Coo 对话等）只有填了主人 QQ、该号在 AstrBot `admins_id` 里，并且用 `conv_id` / `reply_to` 显式指定已知会话时才允许主动发送。缺一条就在 World 本地拒绝，不发帧。
+- `at`（1.3.6）：只对群生效，QQ 号字符串数组，最多 10 个；`["all"]` 表示 @全体，World 侧还需要 `worlds.astrbot.allowAtAll`。私聊忽略并说明；`voice` 与 `at` 同条返回 `voice_at_conflict`。
 
 ### 6.4 回执
 
@@ -306,6 +315,8 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 | `empty_message` | 正文和图片都为空 |
 | `voice_needs_text` | 语音没有正文 |
 | `voice_image_conflict` | 语音和图片同条 |
+| `voice_at_conflict` | 语音和 `at` 同条 |
+| `bad_at` | `at` 不是数组、含非数字 QQ 号 / 非 `"all"`，或超过 10 个 |
 | `bad_image` / `image_too_large` / `image_bad_type` | 图片字段、大小或 mime 不合法 |
 | `rate_limited` | 超过每分钟发送上限 |
 | `door_closed` | 插件未启用，发送门关着 |
@@ -388,9 +399,9 @@ type Conv = {
 
 | World | 插件 | 行为 |
 |---|---|---|
-| 1.3.6 | 1.3.6 | UMO 单通道，完整功能 |
+| 1.3.6 | 1.3.6 | UMO 单通道，完整功能；`at` / `conversations` 需要两端都 ≥ 1.3.6 |
 | 1.3.5 | 1.3.5 | UMO 主键；发送帧已要求 UMO |
-| 1.3.6 | 1.3.4 及更早 | 入站可能无 UMO：能显示，不能回发 |
+| 1.3.6 | 1.3.4 及更早 | 入站可能无 UMO：能显示，不能回发；`at` 会被旧桥忽略 |
 | 1.3.4 及更早 | 1.3.6 | 发送无 UMO → `missing_umo`；建议两端同步升级 |
 
 原则：**当前单通道要求 UMO；旧帧只做只读兼容。** 升级时先升插件再升 World，或两端一起升。

@@ -12,7 +12,7 @@ QQ 里的人继续在群和私聊里说话；AstrBot 继续管账号、插件、
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
-已在 **Cortico 0.2.8 / Coopanion 0.2.12** 上实机验证：文字、图片（单图与多图）、语音、撤回/戳一戳通知、断线重连。
+实机基线为 **Coopanion 0.2.12**：文字、图片（单图与多图）、语音、撤回/戳一戳通知、断线重连已验证。1.3.6 新增的主动发送、群内 `at` / @全体、`ready` 会话快照目前只有单测，待实机冒烟。
 
 从 1.2.5 起，本包与 `astrbot_plugin_cortico_bridge` 的版本号保持一致。
 
@@ -76,7 +76,7 @@ corepack pnpm add cortico-world-astrbot
   `【QQ群 测试群 18:52】#消息号 昵称(QQ:123)：正文`、`【QQ私聊 18:52】…`。
   图片取不到时写成 `[图片|没取到：原因]`，不让模型猜。
 - 提供 `astrbot_send_message`，让 bot 能把话（文字、图片或语音）发回群里；`voice: true` 会请桥用 TTS 合成，桥没开或失败时自动退回文字。
-- **只有当前这一轮是 QQ 轮次时才能发**。不给 `conv_id` 就发回这一轮所在的会话；给 `conv_id` 也只是在这一轮里换目标，必须选桥已经见过、带 UMO 的会话。桌宠、Coo 对话等非 QQ 轮次一律拒绝，显式 `conv_id` 不能绕过。
+- QQ 轮次可以省略目标，隐式回触发会话；**非 QQ 轮次**只有在「连接」填了主人 QQ（且该号是 AstrBot 管理员）、并用 `conv_id` / `reply_to` 指定已知会话时才允许主动发送。缺任何一条都会被拒绝并说明原因；显式目标必须是桥见过、带 UMO 的会话。
 - 工具也是两条身份路径：QQ 轮次用「触发这一轮的那条消息」的发言者身份，普通群友的管理员工具会被拒绝；Coo 对话轮次只有在「连接」里填了主人 QQ、且这个号在 AstrBot 管理员名单里时，才以该主人身份执行。超过 2 分钟的旧 QQ 轮次不会借主人身份。失败时如实显示中文原因，不假装成功。
 - 纯 QQ 通知（撤回、戳一戳、入退群）只作为上下文，不建立 QQ 轮次；`[QQ 人消息 + 工具清单通知]` 这种同批也不算 mixed，仍然可以正常回复。`turnMsgId` 为空（只有通知）时拒绝发消息和调工具。
 - 提供 `astrbot_status`，查连接状态、这一轮是不是 QQ 轮次、语音是否可用、见过的会话。
@@ -95,6 +95,24 @@ corepack pnpm add cortico-world-astrbot
 `owner` 与 `role` 分开：`role` 是 AstrBot 的工具权限，`owner` 才是「主人」。当前两者都取 AstrBot 管理员名单。
 
 **接入边界**：本包只定义 QQ 事件与自己的工具，不替 Coo 对话页、桌宠或控制台指定回复工具。不把 `[typed]` 等通用标签一概当成原版桌宠，也不要求混合输入时优先回 QQ。QQ 出口的硬校验只约束本包；本地对话继续由原有 World 处理，不需要修改 Coo 安装目录。
+
+## 主动发送与 @
+
+### 从 Coo 侧主动发 QQ
+
+1.3.6 起，桌宠、Coo 对话等非 QQ 轮次也可以主动发消息，但要同时满足：
+
+1. 「连接」页填了主人 QQ，且该号在 AstrBot 的 `admins_id` 里；
+2. 调用 `astrbot_send_message` 时用 `conv_id`（群号 / QQ 号，可配 `conv_kind`）或 `reply_to` 指定目标；
+3. 目标必须是桥已经见过的会话。桥在 `ready` 里最多报 20 条最近会话；要发到没列出的会话，先在那个会话说一句，让桥记下它。
+
+QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过期（2 分钟）的 QQ 轮次不会退回主人身份，也不会回退到 `lastConv`。
+
+### @ 与 @全体
+
+- 群里用 `at: ["123456789", …]` 点名，最多 10 个；私聊里 `at` 被忽略，回执会说明。
+- `at: ["all"]` 是 @全体。默认关闭，需要在部署的 `config.json` 里打开 `worlds.astrbot.allowAtAll`（面板暂无开关）；没开时工具直接拒绝，不会发出。
+- 语音不能和 `at` 同一条，桥返回 `voice_at_conflict`；`at` 格式不对或超过 10 个返回 `bad_at`。
 
 ## 它不做什么
 
@@ -115,11 +133,12 @@ corepack pnpm add cortico-world-astrbot
 | `channelHint` | `true` | 在需要回复的 QQ 消息（@、带图、私聊）后加一行「用 astrbot_send_message 回」的提醒 |
 | `reconnectBaseMs` | `1000` | 断线后第一次重连等待；之后翻倍 |
 | `reconnectMaxMs` | `30000` | 重连等待上限 |
-| `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；必须纯数字、20 位以内，且在该 AstrBot 的 `admins_id` 里。留空表示不借身份 |
+| `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具、以及非 QQ 轮次主动发 QQ 时借用的管理员 QQ；必须纯数字、20 位以内，且在该 AstrBot 的 `admins_id` 里。留空表示不借身份、也不允许主动发送 |
+| `allowAtAll` | `false` | 允许 `at: ["all"]` @全体。面板暂无开关，改部署的 `config.json` 里的 `worlds.astrbot.allowAtAll` |
 
 群范围、`mention` / `all` 消息范围、称呼和发送频率都由 AstrBot 插件统一控制，World 不再重复配置。
 
-`wsUrl`、`token`、`reconnect*` 是建立连接时用的，保存后要点「重启 World」才生效；`includeTime`、`channelHint`、`ownerId` 保存后即时生效。
+`wsUrl`、`token`、`reconnect*` 是建立连接时用的，保存后要点「重启 World」才生效；`includeTime`、`channelHint`、`ownerId` 保存后即时生效。`allowAtAll` 没有面板开关，直接改部署的 `config.json` 后立即生效。
 
 「连接」页的几条行为：
 
@@ -146,10 +165,12 @@ corepack pnpm add cortico-world-astrbot
 ```json
 { "t": "ready", "v": 1, "channel": "qq",
   "self": { "id": "…", "name": "…" }, "admins": ["42"],
-  "tts": { "ready": true, "provider": "edge_tts" } }
+  "tts": { "ready": true, "provider": "edge_tts" },
+  "conversations": [
+    { "umo": "default:GroupMessage:123456", "kind": "group", "id": "123456", "age_sec": 12 } ] }
 ```
 
-`admins` 就是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。**收到 `ready` 之后才算真正就绪**；只 TCP 连上不算。
+`admins` 就是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。1.3.6 起 `ready` 还带 `conversations[]`（最多 20 条最近会话，含重启前恢复的），World 用它支持主动发送。**收到 `ready` 之后才算真正就绪**；只 TCP 连上不算。
 
 桥推消息：
 
@@ -206,11 +227,13 @@ corepack pnpm add cortico-world-astrbot
   "conv": { "kind": "group", "id": "123456" },
   "text": "要发的话", "replyTo": "可选的消息id",
   "voice": true,
+  "at": ["123456789"],
   "image": { "mime": "image/jpeg", "base64": "…" } }
 ```
 
-- **`umo` 必填**；`conv` 只是投影。World 在发帧前就会检查：QQ 轮次已过期、非 QQ 轮次没填主人 QQ 或没给明确目标、显式目标找不到带 UMO 的已知会话，都直接中文拒绝，不发帧。
-- `conv.kind` 取 `group` 或 `private`。`text` 与 `image` 至少给一个；`voice: true` 需要正文，且不能和 `image` 同时用。
+- **`umo` 必填**；`conv` 只是投影。World 在发帧前就会检查：QQ 轮次已过期、非 QQ 轮次没填主人 QQ（或该号不是管理员）或没给明确目标、显式目标找不到带 UMO 的已知会话，都直接中文拒绝，不发帧。
+- `conv.kind` 取 `group` 或 `private`。`text` 与 `image` 至少给一个；`voice: true` 需要正文，且不能和 `image` 或 `at` 同时用。
+- `at` 只对群生效：QQ 号数组，最多 10 个，`["all"]` 是 @全体（World 侧还需 `allowAtAll`）；私聊里忽略并说明。
 - 发送只允许到桥已经见过的会话；找不到会回「桥还没见过这个会话（没有 UMO）」。
 
 工具调用：
@@ -241,6 +264,8 @@ corepack pnpm add cortico-world-astrbot
 | `empty_message` | 正文和图片都为空 |
 | `voice_needs_text` | 语音没有正文 |
 | `voice_image_conflict` | 语音和图片同条 |
+| `voice_at_conflict` | 语音和 `at` 同条 |
+| `bad_at` | `at` 不是数组、含非数字 QQ 号 / 非 `"all"`，或超过 10 个 |
 | `bad_image` / `image_too_large` / `image_bad_type` | 图片字段、大小或 mime 不合法 |
 | `rate_limited` | 超过插件配置的每分钟上限 |
 | `door_closed` | AstrBot 插件未启用，发送门关着 |
@@ -252,7 +277,7 @@ corepack pnpm add cortico-world-astrbot
 
 工具错误码（`tool-ack.error`）：`missing_identity`、`ambiguous_identity`、`bad_actor`（桥层拒绝），以及 `tool_failed`（工具本身抛错，原文只进插件日志）。插件还会用中文 `note` 说明：桥未启用、这一轮的消息已过期、没有在 `tools_allow` 里、工具不存在、主人号不在管理员名单、主人事件构造失败等。
 
-World 侧还有自己的本地校验，不会把帧发出去：QQ 轮次已过期、非 QQ 轮次没有主人 QQ 或没有明确目标、`conv_id` 不是字符串或数字、显式目标没有 UMO、`at` 不是数字 QQ 号或超过 10 个。
+World 侧还有自己的本地校验，不会把帧发出去：QQ 轮次已过期、非 QQ 轮次没有主人 QQ（或该号不是管理员）或没有明确目标、`conv_id` 不是字符串或数字、显式目标没有 UMO、`at` 不是数字 QQ 号或超过 10 个、语音和 `at` 同条。
 
 ## 开发
 
@@ -262,7 +287,7 @@ corepack pnpm typecheck
 corepack pnpm test
 ```
 
-当前 Vitest 共 134 个用例（world 120 + driver 14），全部通过。
+当前 Vitest 共 141 个用例（world 127 + driver 14），全部通过。
 
 装进实例验证（在 Cortico 检出根下）：
 
@@ -272,6 +297,11 @@ corepack pnpm check:extension <本包目录>
 ```
 
 需要 Node 22 以上。
+
+## 已知问题
+
+- **NapCat / 反向 WS 重连后主动发送全部失败**：桥还连着、也能收消息，但主动发全失败时，先重启 AstrBot。上游问题见 AstrBot #10154，等待修复期间不要连着重发同一条。
+- **一个 aiocqhttp 适配器多账号**：可能选不中想用的那个连接（AstrBot #10136）。用 `bridge_platforms` 明确只接管一个平台，或把账号拆成多个适配器。
 
 ## 问题解答
 

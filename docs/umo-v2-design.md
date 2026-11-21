@@ -3,6 +3,8 @@
 状态：§3 注册表 v2 已部分实施（字段比本稿少，见 3.2）；§4–§6 仍是设计稿，未实施。
 范围：`cortico-world-astrbot` + `astrbot_plugin_cortico_bridge`
 
+> 历史设计稿：本文保留当时的推理与未实施项，**行为以当前代码与 README 为准**。文中「非 QQ 轮次一律拒绝」等结论已被 1.3.6 的主动发送规则取代。
+
 ---
 
 ## 1. 目标
@@ -218,6 +220,7 @@ interface Umo {
 ```text
 发送参数   missing_umo / invalid_umo / unknown_umo / umo_conv_mismatch
            bad_session / empty_message / voice_needs_text / voice_image_conflict
+           voice_at_conflict / bad_at
            bad_image / image_too_large / image_bad_type
 发送执行   rate_limited / door_closed / send_queue_timeout / send_timeout
            send_failed / platform_missing / tts_unavailable / busy
@@ -257,7 +260,7 @@ private turnChannelAt = 0;
 当前实现没有 `astrbot_draft` / `astrbot_confirm`，也没有 `umo` 参数；工具参数是 `conv_kind` / `conv_id` / `reply_to`。
 
 - `astrbot_send_message`
-  - 只允许当前 QQ 轮次；桌宠/控制台、mixed、过期一律拒绝；
+  - 设计稿结论：只允许当前 QQ 轮次；桌宠/控制台、mixed、过期一律拒绝。**1.3.6 已放宽**：非 QQ 轮次在填了主人 QQ（管理员）+ 显式 `conv_id`/`reply_to` + 已知会话时可以主动发，以 README 为准；
   - 不传目标就发回这一轮；
   - 传了 `conv_id` 也必须能找到带 UMO 的已知会话，否则本地拒绝；
   - `conv_id` 接受字符串或数字，其他类型明确失败。
@@ -271,7 +274,7 @@ private turnChannelAt = 0;
 
 ### 5.3 桌宠/控制台
 
-- `astrbot_send_message` 不允许从桌宠/控制台轮次调用，显式 `conv_id` 也不能绕过。
+- `astrbot_send_message` 在桌宠/控制台轮次的放行规则已按 1.3.6 更新（主人 QQ 是管理员 + 显式目标 + 已知会话）；设计稿时期的“一律拒绝”只作历史记录。
 - 非 QQ 输入沿用来源 World 的回复规则；本包不为 desktop-pet、Live2D 或 console 指定发言工具。
 - `astrbot_call_tool` 在 Coo 对话轮次可以走 owner actor，前提是连接页填了主人 QQ 且该号在 AstrBot 管理员名单里。
 
@@ -328,7 +331,7 @@ private turnChannelAt = 0;
 | 边界 | watch list | 注册表 + platform + current turn |
 | 审核 | 发送前确认 | 主动发送确认；当前回复不确认 |
 
-结论（设计）：**当前回复直发，主动发送 draft/confirm**。不把两步确认强加到每条聊天回复。当前版本还没有 draft/confirm，所以非 QQ 轮次直接拒绝发送。
+结论（设计）：**当前回复直发，主动发送 draft/confirm**。不把两步确认强加到每条聊天回复。当前版本还没有 draft/confirm；1.3.6 起非 QQ 轮次在主人 QQ + 显式目标 + 已知会话时可以主动发送，不再一律拒绝（以 README 为准）。
 
 ---
 

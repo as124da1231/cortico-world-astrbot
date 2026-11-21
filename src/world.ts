@@ -88,7 +88,7 @@ function parseMentions(
     const value = String(item).trim();
     if (value === 'all') {
       if (!allowAll) {
-        return { ok: false, reason: '@全体成员没有开启：先在「连接」里打开「允许 @全体成员」。' };
+        return { ok: false, reason: '@全体成员没有开启：在配置里打开 worlds.astrbot.allowAtAll（面板暂无开关）。' };
       }
       list.push('all');
       continue;
@@ -129,8 +129,9 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       'Text, an image, or both. Set voice=true to speak a short text reply out loud ' +
       '(TTS; falls back to text if the bridge has no TTS). ' +
       'In a group, at takes QQ numbers to mention (max 10); at=["all"] mentions everyone only ' +
-      'when the connection page allows it, and is ignored in private chats.',
-    tags: ['write'],
+      'when worlds.astrbot.allowAtAll is on in the config (there is no panel toggle yet), ' +
+      'and is ignored in private chats.',
+    tags: ['speak'],
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -168,7 +169,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
           maxItems: 10,
           description:
             'Group only. QQ numbers to mention, for example ["123456789"]; "all" mentions ' +
-            'everyone when the connection page allows it. Ignored in private chats.',
+            'everyone when worlds.astrbot.allowAtAll is on (no panel toggle yet). Ignored in private chats.',
         },
       },
       required: [],
@@ -228,7 +229,7 @@ export const CALL_TOOL_DECL: Omit<ToolDef, 'handler'> = {
     'as the owner QQ filled in the connection settings, but only when that number is in AstrBot ' +
     'admins—otherwise it is refused. When a tool fails or is refused, say so honestly and do not ' +
     'pretend it succeeded.',
-  tags: ['write'],
+  tags: ['act'],
   parameters: {
     type: 'object',
     additionalProperties: false,
@@ -1165,7 +1166,8 @@ export class AstrbotWorld implements World {
         } else {
           lines.push(
             '这一轮：没有投递过 QQ 消息（可能是桌宠事件或 Coo 对话）。' +
-              '不要用 astrbot_send_message 兜底；要发 QQ 先等 QQ 那边有人说话。',
+              '这一轮不是 QQ；要主动发，用 conv_id/reply_to 指定已见过的会话，' +
+              '且需在「连接」里填主人 QQ 并且该号是 AstrBot 管理员。',
           );
         }
 
