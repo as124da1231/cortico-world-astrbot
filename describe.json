@@ -119,7 +119,7 @@
     },
     {
       "name": "astrbot_call_tool",
-      "description": "Call one of the AstrBot tools enabled for this bridge, by name and with its own arguments. The list of available tools is in your environment prompt (astrbot.tools); if it looks stale, call astrbot_status. There are two identity paths: in a QQ turn the tool runs with the identity of the person whose message started this turn, so admin-only tools are refused when a group member is talking; in a Coo conversation turn (desktop pet or console) it runs as the owner QQ filled in the connection settings, but only when that number is in AstrBot admins—otherwise it is refused. When a tool fails or is refused, say so honestly and do not pretend it succeeded.",
+      "description": "Call one of the AstrBot tools enabled for this bridge, by name and with its own arguments. The list of available tools is in your environment prompt (astrbot.tools); if it looks stale, call astrbot_status. There are two identity paths: in a QQ turn the tool runs with the identity of the person whose message started this turn, so admin-only tools are refused when a group member is talking. In a Coo conversation turn, it runs as the configured AstrBot owner only after the bridge verifies the separate tool token. Execution-class tools require explicit authorization, an administrator identity, and an authorized connection. When a tool fails or is refused, say so honestly and do not pretend it succeeded.",
       "parameters": {
         "type": "object",
         "additionalProperties": false,
@@ -142,8 +142,8 @@
         "act"
       ],
       "summary": {
-        "zh": "按名字调用 AstrBot 上启用的一个工具；用触发这一轮的那条消息的身份执行。",
-        "en": "Calls one of the AstrBot tools enabled for the bridge, running as the person whose message started this turn."
+        "zh": "调用 AstrBot 已授权的工具。QQ 轮次使用发言者身份，Coo 对话需要单独授权的主人身份。",
+        "en": "Calls an authorized AstrBot tool as the QQ sender or, in Coo chat, as the separately authorized owner."
       }
     }
   ],

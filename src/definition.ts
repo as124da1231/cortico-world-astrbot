@@ -35,8 +35,8 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
         en: 'Reads or searches the QQ messages this bot has seen: the latest in a conversation, or those containing a keyword.',
       },
       astrbot_call_tool: {
-        zh: '按名字调用 AstrBot 上启用的一个工具；用触发这一轮的那条消息的身份执行。',
-        en: 'Calls one of the AstrBot tools enabled for the bridge, running as the person whose message started this turn.',
+        zh: '调用 AstrBot 已授权的工具。QQ 轮次使用发言者身份，Coo 对话需要单独授权的主人身份。',
+        en: 'Calls an authorized AstrBot tool as the QQ sender or, in Coo chat, as the separately authorized owner.',
       },
     }),
     events: [

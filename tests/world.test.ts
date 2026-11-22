@@ -1004,15 +1004,17 @@ describe('主人与截图授权', () => {
     expect(typeof denied === 'string' ? false : denied.failed).toBe(true);
   });
 
-  it('环境提示词写明 QQ 上的主人', async () => {
+  it('环境提示词区分 AstrBot 管理员与实际发言者', async () => {
     const { driver, world } = await mount({ mode: 'all' });
-    driver.ownerIds = ['10001'];
-    expect(world.envPromptVars()['astrbot.owner']).toContain('10001');
+    driver.ownerIds = ['10001', '10002'];
+    const identity = world.envPromptVars()['astrbot.owner'];
+    expect(identity).toContain('管理员 QQ 帐号为 10001、10002');
+    expect(identity).toContain('发言者的身份以收到的 QQ 消息为准');
   });
 
-  it('还不知道主人时如实说明', async () => {
+  it('桥未提供管理员名单时按实际消息来源描述', async () => {
     const { world } = await mount({ mode: 'all' });
-    expect(world.envPromptVars()['astrbot.owner']).toContain('还没有报来管理员');
+    expect(world.envPromptVars()['astrbot.owner']).toContain('未提供 AstrBot 管理员名单');
   });
 });
 
@@ -1739,7 +1741,8 @@ describe('历史与提示词（W-006 / W-015 / W-016）', () => {
     expect(prompt).toContain('主人 QQ');
     expect(prompt).toContain('不要假装成功');
 
-    expect(CALL_TOOL_DECL.description).toContain('owner QQ');
+    expect(CALL_TOOL_DECL.description).toContain('configured AstrBot owner');
+    expect(CALL_TOOL_DECL.description).toContain('separate tool token');
     expect(CALL_TOOL_DECL.description).not.toContain('desktop-pet turn has no QQ identity');
     expect(CALL_TOOL_DECL.description).toContain('say so honestly');
   });

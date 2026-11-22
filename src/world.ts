@@ -226,9 +226,10 @@ export const CALL_TOOL_DECL: Omit<ToolDef, 'handler'> = {
     'The list of available tools is in your environment prompt (astrbot.tools); if it looks stale, ' +
     'call astrbot_status. There are two identity paths: in a QQ turn the tool runs with the ' +
     'identity of the person whose message started this turn, so admin-only tools are refused ' +
-    'when a group member is talking; in a Coo conversation turn (desktop pet or console) it runs ' +
-    'as the owner QQ filled in the connection settings, but only when that number is in AstrBot ' +
-    'admins—otherwise it is refused. When a tool fails or is refused, say so honestly and do not ' +
+    'when a group member is talking. In a Coo conversation turn, it runs as the configured ' +
+    'AstrBot owner only after the bridge verifies the separate tool token. Execution-class tools ' +
+    'require explicit authorization, an administrator identity, and an authorized connection. ' +
+    'When a tool fails or is refused, say so honestly and do not ' +
     'pretend it succeeded.',
   tags: ['act'],
   parameters: {
@@ -314,8 +315,8 @@ export class AstrbotWorld implements World {
 
     const owners = this.driver?.ownerIds ?? [];
     const owner = owners.length
-      ? `QQ 上用这些号说话的是主人本人：${owners.join('、')}。他们说「我」就是指这台电脑的主人。`
-      : '桥还没有报来管理员，暂时不知道 QQ 上哪个人是主人；先按普通聊天对象对待。';
+      ? `AstrBot 的管理员 QQ 帐号为 ${owners.join('、')}。每位发言者的身份以收到的 QQ 消息为准。`
+      : '桥未提供 AstrBot 管理员名单，按实际消息来源辨认发言者。';
 
     const tools = this.toolList.length
       ? this.toolList
