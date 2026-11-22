@@ -45,6 +45,22 @@ const BASE: EventRangeQuery = { source: 'astrbot', origin: 'external' };
 /** 一次「读最近消息」最多扫多少条事件。 */
 const MAX_LATEST_SCAN = 20_000;
 
+/** Read a known QQ message in its own conversation, including its attachments. */
+export function findMessage(store: EventStoreReader, conv: Conv, id: string): EventEnvelope | undefined {
+  const pageSize = 300;
+  let cursor = store.latestCursor();
+  for (let scanned = 0; cursor > 0 && scanned < MAX_LATEST_SCAN; scanned += pageSize) {
+    const events = store.range({ ...BASE, toCursor: cursor, limit: pageSize });
+    for (let i = events.length - 1; i >= 0; i--) {
+      const event = events[i]!;
+      if (String(event.meta?.message_id ?? '') === id && inConv(event, conv)) return event;
+    }
+    if (events.length < pageSize) break;
+    cursor = events[0]!.cursor - 1;
+  }
+  return undefined;
+}
+
 /**
  * 该会话最近 limit 条，按时间升序。
  * 事件库不按会话过滤，所以从最新往前翻页，凑够或读到头为止。

@@ -10,7 +10,7 @@
  * - 连接只发生在 start(host)；连不上只写日志，绝不抛错。
  */
 import { fileURLToPath } from 'node:url';
-import type { EventEnvelope, RunPhase, ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
+import type { BlobInput, BlobRef, EventEnvelope, RunPhase, ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import {
   ASTRBOT_CONFIG_GROUP,
@@ -26,13 +26,36 @@ import {
   type ToolActor,
   type ToolInfo,
 } from './driver.ts';
-import { convOfEvent, renderLatest, renderSearch } from './history.ts';
+import { convOfEvent, findMessage, renderLatest, renderSearch } from './history.ts';
+import { describeSegment, imageAttachmentIndex, needsBridge, parseSegments, renderSegmentLine, type MessageSegment } from './message-segments.ts';
 import { EXTENSION_VERSION } from './version.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
 
 /** 一条消息最多带多大的图（原始字节）；再大就拒绝，免得把桥和 QQ 撑爆。 */
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const INBOUND_IMAGE_LIMIT = 2;
+
+function imageBlobs(images: OutgoingImage[] = []): BlobInput[] {
+  return images.map((img) => ({
+    bytes: new Uint8Array(Buffer.from(img.base64, 'base64')),
+    mime: img.mime,
+    fallbackText: '[图片]',
+  }));
+}
+
+function savedImage(segment: MessageSegment, blobs: BlobRef[] = []): BlobRef | undefined {
+  const index = imageAttachmentIndex(segment);
+  const blob = index === undefined ? undefined : blobs[index];
+  return blob?.mime.startsWith('image/') ? blob : undefined;
+}
+
+function directSavedImages(event: EventEnvelope | undefined): BlobRef[] {
+  if (!event) return [];
+  const segments = parseSegments(event.meta?.segments);
+  if (segments.length) return segments.flatMap((part) => savedImage(part, event.blobs) ?? []);
+  return (event.blobs ?? []).filter((blob) => blob.mime.startsWith('image/'));
+}
 
 /** 收到带权限的消息后，这个会话在多久内可以发图。 */
 export const SCREENSHOT_GRANT_MS = 120_000;
@@ -216,6 +239,30 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       required: [],
     },
   },
+  {
+    name: 'astrbot_read_message_component',
+    description:
+      'Read a QQ quote, merged forward, attachment details or another component of an observed message. ' +
+      'Use the message #id and the 1-based component number shown in the QQ message. ' +
+      'A nested path such as [2,3] selects the third entry of the second component. ' +
+      'Use the returned offset for more entries. In a QQ turn only the current conversation can be read.',
+    tags: ['read'],
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        message_id: { type: 'string', description: 'The observed outer QQ message ID, without #.' },
+        path: {
+          type: 'array', items: { type: 'integer', minimum: 1, maximum: 120 },
+          minItems: 1, maxItems: 6, description: 'The component number and optional nested entry numbers.',
+        },
+        offset: { type: 'integer', minimum: 0, description: 'Page offset from the previous result.' },
+        conv_kind: { type: 'string', enum: ['group', 'private'] },
+        conv_id: { type: 'string', description: 'Specify the QQ conversation when reading outside a QQ turn.' },
+      },
+      required: ['message_id', 'path'],
+    },
+  },
 ];
 
 /** `astrbot_call_tool` 的静态声明；describe 与实例共用这一份。 */
@@ -340,7 +387,7 @@ export class AstrbotWorld implements World {
   }
 
   tools(): ToolDef[] {
-    return [this.sendMessageTool(), this.statusTool(), this.historyTool(), this.callToolDef()];
+    return [this.sendMessageTool(), this.statusTool(), this.historyTool(), this.readComponentTool(), this.callToolDef()];
   }
 
   /** 「连接」面板的只读状态；只报 World 自己知道的事，不替 AstrBot 报策略。 */
@@ -426,7 +473,7 @@ export class AstrbotWorld implements World {
         token: cfg.token,
         ownerToolToken: cfg.ownerToolsEnabled !== false ? this.opts.ownerToolSecret?.read() : undefined,
         // 告诉桥「我这边能不能读图」，桥据此决定原图要不要过来。
-        capabilities: { images: this.acceptsImages(host) },
+        capabilities: { images: this.acceptsImages(host), message_segments: true, component_media: true },
         reconnectBaseMs: cfg.reconnectBaseMs,
         reconnectMaxMs: cfg.reconnectMaxMs,
         handshakeTimeoutMs: this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
@@ -635,6 +682,34 @@ export class AstrbotWorld implements World {
     }
   }
 
+  private attachStoredQuoteImages(host: WorldHost, msg: BridgeMessage, blobs: BlobInput[]): void {
+    if (!msg.quoteImageHistory || !this.acceptsImages(host)) return;
+    const reused = new Map<string, number>();
+    for (const part of msg.segments ?? []) {
+      if (part.type !== 'reply' || !part.fields.id || part.fields.id === msg.id) continue;
+      const children = part.children ?? [];
+      const imageParts = children.filter((child) => child.type === 'image');
+      if (imageParts.some((child) => imageAttachmentIndex(child) !== undefined)) continue;
+      const original = findMessage(host.store, msg.conv, part.fields.id);
+      if (original && convOfEvent(original)?.umo !== msg.conv.umo) continue;
+      const archived = directSavedImages(original).filter((blob) => host.blob(blob.handle));
+      for (const [slot, blob] of archived.entries()) {
+        let index = reused.get(blob.handle);
+        if (index === undefined) {
+          if (blobs.length >= INBOUND_IMAGE_LIMIT) break;
+          index = blobs.length;
+          blobs.push({ handle: blob.handle, fallbackText: '[QQ 引用图片]' });
+          reused.set(blob.handle, index);
+        }
+        const image = imageParts.length === archived.length ? imageParts[slot] : undefined;
+        const fields = { attachment: String(index), text: '[图片：引用原图]', media_state: 'attached' };
+        if (image) Object.assign(image.fields, fields);
+        else children.push({ type: 'image', fields });
+      }
+      if (children.length) part.children = children;
+    }
+  }
+
   /** 桥送来一条消息：按配置的范围决定要不要投递，投递时把事实写清楚。 */
   private async onBridgeMessage(msg: BridgeMessage): Promise<void> {
     const host = this.host;
@@ -669,7 +744,10 @@ export class AstrbotWorld implements World {
       }
     }
 
-    const body = msg.text.trim();
+    const blobs = imageBlobs(msg.images);
+    if (!isNotice) this.attachStoredQuoteImages(host, msg, blobs);
+
+    const body = (msg.segments?.length ? renderSegmentLine(msg.segments) : '').trim() || msg.text.trim();
     // 桥会把非文字消息转成占位文字；真空的丢掉。
     if (!body) return;
 
@@ -702,13 +780,6 @@ export class AstrbotWorld implements World {
     const head = `【${isPrivate ? 'QQ私聊' : `QQ群 ${convName}`}${clock ? ` ${clock}` : ''}】`;
     const idPart = msg.id ? `#${msg.id} ` : '';
     const senderTag = tags.length ? `(${tags.join(', ')})` : '';
-    // 桥只在「本端模型能读图」时才带原图；带了就作为附件投递，模型直接看。
-    const blobs = (msg.images ?? []).map((img) => ({
-      bytes: new Uint8Array(Buffer.from(img.base64, 'base64')),
-      mime: img.mime,
-      fallbackText: '[图片]',
-    }));
-
     // 通知类没有「谁在说话」，只记一条事实；撤回时补上被撤回的原文。
     let noticeBody = body;
     if (isNotice && msg.ref) {
@@ -717,7 +788,7 @@ export class AstrbotWorld implements World {
     }
     // 就在这条消息后面提醒一次：模型最容易在这里顺手用错身体。
     // 只给「需要回复」的（@、私聊、带图），避免每条群聊都加一行。
-    const wantsReply = !isNotice && (isPrivate || called || (msg.images?.length ?? 0) > 0);
+    const wantsReply = !isNotice && (isPrivate || called || blobs.length > 0);
     const channelHint =
       wantsReply && this.opts.cfg.channelHint !== false
         ? '\n（回复这条 QQ 消息用 astrbot_send_message；其他界面的消息不会自动转发到 QQ）'
@@ -751,6 +822,7 @@ export class AstrbotWorld implements World {
             owner: isOwner,
             notice: isNotice,
             ...(msg.imageErrors ? { image_errors: msg.imageErrors } : {}),
+            ...(msg.segments?.length ? { segments: msg.segments } : {}),
           },
         },
         // 主人私聊立即；群只认被叫到；其他私聊和群聊合批；通知只排队。
@@ -895,9 +967,9 @@ export class AstrbotWorld implements World {
           const code = note && res.error && res.error !== note ? `（${res.error}）` : '';
           return { text: `工具 ${name} 没有执行：${reason}${code}`, failed: true };
         }
-        return res.result && res.result.trim() !== ''
-          ? res.result
-          : `工具 ${name} 执行完了，没有返回文字。`;
+        const text = res.result?.trim() ? res.result : `工具 ${name} 执行完了，没有返回文字。`;
+        const blobs = name === 'cortico_read_message_component' ? imageBlobs(res.images) : [];
+        return blobs.length ? { text, blobs } : text;
       },
     };
   }
@@ -1156,6 +1228,82 @@ export class AstrbotWorld implements World {
         if (text) return text;
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
         return `${where}里没有找到符合条件的消息。`;
+      },
+    };
+  }
+
+  private readComponentTool(): ToolDef {
+    return {
+      ...ASTRBOT_TOOL_DECLS[3],
+      handler: async (args, ctx) => {
+        const host = this.host;
+        if (!host) return { text: 'QQ 消息库尚未就绪。', failed: true };
+        const id = typeof args.message_id === 'string' ? args.message_id.trim().replace(/^#/, '') : '';
+        const path = args.path;
+        if (!id || !Array.isArray(path) || path.length < 1 || path.length > 6 ||
+            path.some((index) => !Number.isInteger(index) || index < 1 || index > 120)) {
+          return { text: '请提供消息号和有效的组件位置。', failed: true };
+        }
+        const { conv, error } = this.pickConv(args, { allowLast: false });
+        if (!conv) return { text: error || '请指定这条消息所在的 QQ 会话。', failed: true };
+        if (this.qqTurnActive() && (!this.turnConv || this.turnMultiConv ||
+            (this.turnConv.umo && conv.umo ? this.turnConv.umo !== conv.umo :
+              this.turnConv.kind !== conv.kind || this.turnConv.id !== conv.id))) {
+          return { text: '只可查看当前 QQ 会话中的组件。', failed: true };
+        }
+        const event = findMessage(host.store, conv, id);
+        if (!event) return { text: '这个会话没有这条消息的记录。', failed: true };
+        let parts = parseSegments(event.meta?.segments);
+        if (!parts.length) return { text: '这条历史消息只有旧版正文。', failed: true };
+
+        let part: MessageSegment | undefined;
+        const offset = clampInt(args.offset, 0, 0, 120);
+        for (const index of path) {
+          part = parts[index - 1];
+          if (!part) return { text: '该位置没有可查看的组件。', failed: true };
+          if (needsBridge(part)) {
+            const result = await this.callToolDef().handler({
+              name: 'cortico_read_message_component', args: { message_id: id, path, offset },
+            }, ctx);
+            return result;
+          }
+          parts = part.children ?? [];
+        }
+        if (!part) return { text: '该位置没有可查看的组件。', failed: true };
+        const details = [describeSegment(part)];
+        if (part.type === 'reply' && part.fields.id && !part.fields.text && parts.length === 0) {
+          const original = findMessage(host.store, conv, part.fields.id);
+          const body = original?.meta?.body;
+          details.push(typeof body === 'string' && body ? `原消息：${body.slice(0, 3000)}` : '原消息未出现在已记录的会话中。');
+        }
+        if (parts.length) {
+          const end = Math.min(offset + 8, parts.length);
+          for (let i = offset; i < end; i++) {
+            const child = parts[i]!;
+            const ref = [...path, i + 1].join('.');
+            details.push(`${ref} ${describeSegment(child).slice(0, 380)}`);
+          }
+          if (offset >= parts.length) details.push('已读到本次可获取内容的末尾。');
+          if (end < parts.length) details.push(`下一页 offset=${end}`);
+        }
+        if (part.type === 'image' || part.type === 'reply') {
+          const selected = part.type === 'image' ? [part] : parts.slice(offset, offset + 8);
+          let images = selected.flatMap((item) => savedImage(item, event.blobs) ?? []);
+          if (!images.length && offset === 0 && part.type === 'reply' && part.fields.id
+              && part.fields.id !== id) {
+            const original = findMessage(host.store, conv, part.fields.id);
+            if (original && convOfEvent(original)?.umo === conv.umo) images = directSavedImages(original);
+          }
+          const handles = new Set(images.filter((blob) => host.blob(blob.handle)).map((blob) => blob.handle));
+          if (handles.size) return {
+            text: details.join('\n'),
+            blobs: [...handles].map((handle) => ({ handle, fallbackText: '[QQ 图片]' })),
+          };
+          if (part.type === 'image' && imageAttachmentIndex(part) !== undefined) {
+            details.push('图片附件未在当前历史中找到。');
+          }
+        }
+        return details.join('\n');
       },
     };
   }

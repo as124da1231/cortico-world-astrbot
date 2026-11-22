@@ -10,6 +10,7 @@
 import WebSocket from 'ws';
 import type { Logger } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
+import { parseSegments, type MessageSegment } from './message-segments.ts';
 
 /** 会话种类：群聊或私聊。 */
 export type ConvKind = 'group' | 'private';
@@ -47,6 +48,9 @@ export interface BridgeMessage {
   conv: Conv;
   sender?: { id?: string; name?: string };
   text: string;
+  segments?: MessageSegment[];
+  /** The bridge is using native images and permits same-conversation archive fallback. */
+  quoteImageHistory?: boolean;
   /** 这条消息是否点了名（@ 或叫到称呼）。由桥判断并如实告知。 */
   mentioned?: boolean;
   /** 桥允许这条消息的发送者要截图；没有这个字段一律当作不允许。 */
@@ -119,6 +123,7 @@ export interface ToolResult {
   ok: boolean;
   /** ok 为 true 时的结果文本。 */
   result?: string;
+  images?: OutgoingImage[];
   /** ok 为 false 时的原因（稳定错误码，例如 tool_failed）。 */
   error?: string;
   /**
@@ -678,9 +683,10 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       this.pendingTools.delete(rid);
       clearTimeout(call.timer);
       const ok = frame.ok === true;
+      const images = ok ? parseImages(frame.images) : undefined;
       call.resolve(
         ok
-          ? { ok: true, result: String(frame.result ?? '') }
+          ? { ok: true, result: String(frame.result ?? ''), ...(images ? { images } : {}) }
           : {
               ok: false,
               error: String(frame.error ?? '桥拒绝了这次工具调用'),
@@ -928,6 +934,8 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
         }
       : undefined,
     text,
+    segments: parseSegments(frame.segments),
+    quoteImageHistory: frame.quote_image_history === true,
     mentioned: frame.mentioned === true,
     canScreenshot: (frame.can as Record<string, unknown> | undefined)?.screenshot === true,
     role,
@@ -959,13 +967,16 @@ function parseImageErrors(raw: unknown): Array<{ index: number; reason: string }
 function parseImages(raw: unknown): Array<{ mime: string; base64: string }> | undefined {
   if (!Array.isArray(raw)) return undefined;
   const out: Array<{ mime: string; base64: string }> = [];
+  let total = 0;
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
     const rec = item as Record<string, unknown>;
     const mime = typeof rec.mime === 'string' ? rec.mime : '';
     const base64 = typeof rec.base64 === 'string' ? rec.base64 : '';
-    if (!base64 || !mime.startsWith('image/')) continue;
+    if (!base64 || !mime.startsWith('image/') || base64.length > 8 * 1024 * 1024 ||
+        total + base64.length > 10 * 1024 * 1024) continue;
     out.push({ mime, base64 });
+    total += base64.length;
     if (out.length >= 4) break;
   }
   return out.length > 0 ? out : undefined;

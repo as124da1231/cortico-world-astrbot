@@ -8,11 +8,11 @@ QQ 里的人继续在群和私聊里说话；AstrBot 继续管账号、插件、
 
 群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；Coo 对话里可以使用 AstrBot 已授权的主人身份和独立工具令牌调用。
 
-**当前版本：1.3.7**
+**当前版本 1.3.8**
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
-**1.3.7 验证范围**。Coopanion 0.2.23 已与 AstrBot 4.29.1 上的新版桥完成实机启动、连接和会话恢复。独立工具授权及拒绝回执通过隔离回环验证。真实 QQ 点名、Coo 回复回群的往返，以及本版的语音和跨机主人工具调用仍待实测。
+双端升级到 1.3.8 后，Coo 可以查看 QQ 引用、合并转发和附件详情。引文保留可用的原图和转写，转发可按条展开，图片和语音按需读取。文件和视频提供名称、大小等适配器已返回的信息。媒体来源失效时，Coo 会说明当前能读到的内容。
 
 从 1.2.5 起，本包与 `astrbot_plugin_cortico_bridge` 的版本号保持一致。
 
@@ -70,9 +70,9 @@ corepack pnpm add cortico-world-astrbot
 
 装完先到 **Coo 的 World 页**启用「AstrBot · QQ」——World 面板里没有启用开关，启停只在 World 页。然后打开本 World 的「连接」页，填好 `wsUrl` 与 `token`，保存，再按页面提示重启 World。
 
-### 升级至 1.3.7
+### 升级至 1.3.8
 
-1. 将 AstrBot 桥和 Coo World 一起升到 1.3.7。桥要求 **AstrBot ≥ 4.29.1**。旧会话、群名单和普通转发的连接设置可以沿用。
+1. 将 AstrBot 桥和 Coo World 一起升到 1.3.8。桥要求 **AstrBot ≥ 4.29.1**。旧会话、群名单和普通转发的连接设置可以沿用。
 2. 在 AstrBot 插件设置中复核已授权工具。`tools_risks` 中明确标为 `read` 或 `write` 的工具才会被 `*` 纳入。未分类的工具需要单独点名和管理员授权。
 3. 如需在 Coo 对话里用主人身份调用工具，在 AstrBot 设置 `owner_tool_qq` 和 `owner_tool_token`，再到 Coo「连接」填写相同的账号和工具令牌。工具令牌独立于桥 token。跨机工具授权使用 `wss://`。
 

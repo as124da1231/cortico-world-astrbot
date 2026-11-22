@@ -924,6 +924,105 @@ describe('历史检索', () => {
   });
 });
 
+describe('QQ 组件入口', () => {
+  it('引用图片保留附件，展开引用或图片都能返回原图', async () => {
+    const { driver, host, world } = await mount();
+    const handle = 'log:quote.png';
+    host.blobs.set(handle, { bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    driver.emitMessage(groupMsg({
+      segments: [{ type: 'reply', fields: { id: 'prior', text: '请看原图' }, children: [
+        { type: 'image', fields: { attachment: '0' } },
+      ] }],
+      images: [{ mime: 'image/png', base64: 'AQID' }],
+    }));
+    const event = host.events[0]!;
+    expect(event.text).toContain('请看原图 [图片]');
+    expect(event.blobs).toHaveLength(1);
+    event.blobs = [{ handle, mime: 'image/png', fallbackText: '[图片]' }];
+    settle(world, host);
+    const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
+    for (const path of [[1], [1, 1]]) {
+      expect(await handler({ message_id: 'm1', path }, toolCtx())).toMatchObject({ blobs: [{ handle }] });
+    }
+  });
+
+  it('只补用同一 UMO 已保存的引用图片，并遵循桥的原图模式', async () => {
+    const { driver, host } = await mount();
+    host.modelFacts.accepts = () => true;
+    const umo = 'default:GroupMessage:123456';
+    const handle = 'log:earlier.png';
+    host.blobs.set(handle, { bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    driver.emitMessage(groupMsg({ id: 'earlier', umo }));
+    host.events[0]!.blobs = [{ handle, mime: 'image/png', fallbackText: '[图片]' }];
+
+    const quote = (id: string, permit: boolean, target = umo) => parseMessage(groupMsg({
+      id, umo: target, quote_image_history: permit,
+      segments: [{ type: 'reply', fields: { id: 'earlier' } }],
+    }))!;
+    driver.emitMessage(quote('m1', true));
+    expect(host.events[1]?.text).toContain('引用原图');
+    expect(host.events[1]?.blobs).toMatchObject([{ handle }]);
+    driver.emitMessage(quote('m2', false));
+    expect(host.events[2]?.blobs).toBeUndefined();
+    driver.emitMessage(quote('m3', true, 'other:GroupMessage:123456'));
+    expect(host.events[3]?.blobs).toBeUndefined();
+  });
+
+  it('按原顺序入库，能查看引用中的原文和文件详情', async () => {
+    const { driver, host, world } = await mount();
+    const raw = {
+      ...groupMsg(),
+      segments: [
+        { type: 'reply', fields: { id: 'prior', name: '旧作者' }, children: [
+          { type: 'plain', fields: { text: '引用正文' } },
+        ] },
+        { type: 'plain', fields: { text: '正文' } },
+        { type: 'file', fields: { name: '示例.zip', size: '120' } },
+      ],
+    };
+    driver.emitMessage(parseMessage(raw)!);
+    settle(world, host);
+    const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
+    expect(host.events[0]?.text).toContain('[引用 · 组件 1] 旧作者 引用正文 正文 [文件 · 组件 3]');
+    expect(await handler({ message_id: 'm1', path: [1, 1] }, toolCtx())).toBe('引用正文');
+    expect(await handler({ message_id: 'm1', path: [3] }, toolCtx())).toContain('示例.zip');
+    expect(driver.toolCalls).toHaveLength(0);
+  });
+
+  it('以当前 QQ 会话身份读取转发，拒绝跨会话组件', async () => {
+    const { driver, host, world } = await mount();
+    driver.emitMessage(groupMsg({ segments: [{ type: 'forward', fields: { id: 'forward' } }] }));
+    driver.toolResult = { ok: true, result: '转发中的原文' };
+    settle(world, host);
+    const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
+    expect(await handler({ message_id: 'm1', path: [1], offset: 8 }, toolCtx())).toBe('转发中的原文');
+    expect(driver.toolCalls[0]).toMatchObject({
+      name: 'cortico_read_message_component',
+      args: { message_id: 'm1', path: [1], offset: 8 },
+      turn: 'm1',
+    });
+    expect(await handler({ message_id: 'm1', path: [1], conv_id: 'other' }, toolCtx()))
+      .toMatchObject({ failed: true });
+    expect(driver.toolCalls).toHaveLength(1);
+  });
+
+  it('远程组件回执携带图片，纯资料仍是文字回执', async () => {
+    const { driver, host, world } = await mount();
+    driver.emitMessage(groupMsg({ segments: [{ type: 'nodes', fields: {}, children: [
+      { type: 'image', fields: { media_state: 'deferred' } },
+      { type: 'file', fields: { media_state: 'metadata', name: '测试文档.pdf' } },
+    ] }] }));
+    driver.toolResult = { ok: true, result: '转发原图', images: [{ mime: 'image/png', base64: 'AQID' }] };
+    settle(world, host);
+    const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
+    expect(await handler({ message_id: 'm1', path: [1, 1] }, toolCtx())).toMatchObject({
+      text: '转发原图', blobs: [{ mime: 'image/png', bytes: new Uint8Array([1, 2, 3]) }],
+    });
+    expect(await handler({ message_id: 'm1', path: [1, 2] }, toolCtx())).toContain('资料信息');
+    expect(driver.toolCalls).toHaveLength(1);
+  });
+});
+
 describe('主人与截图授权', () => {
   function handlerOf(world: AstrbotWorld, name: string) {
     const tool = world.tools().find((t) => t.name === name);

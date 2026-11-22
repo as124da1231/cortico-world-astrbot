@@ -34,6 +34,10 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
         zh: '读或搜这个 bot 见过的 QQ 消息：某会话最近的若干条，或含关键词的那些。',
         en: 'Reads or searches the QQ messages this bot has seen: the latest in a conversation, or those containing a keyword.',
       },
+      astrbot_read_message_component: {
+        zh: '查看已收到的 QQ 消息中的引用、合并转发与其他组件详情。',
+        en: 'Reads quoted messages, merged forwards and other details of components in observed QQ messages.',
+      },
       astrbot_call_tool: {
         zh: '调用 AstrBot 已授权的工具。QQ 轮次使用发言者身份，Coo 对话需要单独授权的主人身份。',
         en: 'Calls an authorized AstrBot tool as the QQ sender or, in Coo chat, as the separately authorized owner.',
