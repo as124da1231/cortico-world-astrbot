@@ -3,6 +3,11 @@
 export interface ConnectionState {
   enabled: boolean;
   connected: boolean;
+  mode?: 'full' | 'safe';
+  modeKnown: boolean;
+  modeSynced: boolean;
+  switching: boolean;
+  safeAvailable: boolean;
   wsUrl: string;
   tokenSet: boolean;
   includeTime: boolean;

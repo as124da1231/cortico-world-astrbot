@@ -81,6 +81,45 @@ describe('AstrbotBridgeDriver 握手', () => {
     await expect(noticed).resolves.toBe('still alive');
     await driver.stop();
   });
+
+  it('只有收到对端模式确认才更新生效模式，并丢弃旧模式消息', async () => {
+    const wss = new WebSocketServer({ port: 0 });
+    const port = (wss.address() as { port: number }).port;
+    const driver = new AstrbotBridgeDriver({ wsUrl: `ws://127.0.0.1:${port}`, requireModeSync: true });
+    cleanup = async () => {
+      await driver.stop();
+      await new Promise<void>(resolve => wss.close(() => resolve()));
+    };
+    const seen: string[] = [];
+    driver.onMessage(msg => seen.push(msg.id ?? ''));
+    let socket: import('ws').WebSocket;
+    let switchRid = '';
+    wss.on('connection', ws => {
+      socket = ws;
+      ws.on('message', raw => {
+        const packet = JSON.parse(String(raw));
+        if (packet.t === 'hello') {
+          ws.send(JSON.stringify({ t: 'ready', v: 2, mode: 'full', modeRevision: 'old' }));
+        } else if (packet.t === 'mode-accept' && packet.modeRevision === 'old') {
+          ws.send(JSON.stringify({ t: 'mode-status', mode: 'full', modeRevision: 'old', active: true }));
+        } else if (packet.t === 'mode-change') {
+          switchRid = packet.rid;
+          ws.send(JSON.stringify({ t: 'mode-prepare', mode: 'safe', modeRevision: 'new', rid: switchRid }));
+        }
+      });
+    });
+    const started = new Promise<void>(resolve => driver.onState(connected => { if (connected) resolve(); }));
+    await driver.start();
+    await started;
+    const changing = driver.changeMode('safe');
+    await import('vitest').then(({ vi }) => vi.waitFor(() => expect(switchRid).not.toBe('')));
+    expect(driver.mode).toBe('full');
+    socket!.send(JSON.stringify({ t: 'mode-status', mode: 'safe', modeRevision: 'new', rid: switchRid, active: true }));
+    await changing;
+    expect(driver.mode).toBe('safe');
+    for (const id of ['old', 'new']) socket!.send(JSON.stringify({ t: 'msg', umo: 'qq:GroupMessage:10000', id, modeRevision: id, text: id }));
+    await import('vitest').then(({ vi }) => vi.waitFor(() => expect(seen).toEqual(['new'])));
+  });
 });
 
 describe('UMO 契约', () => {

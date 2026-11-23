@@ -10,7 +10,7 @@
  * - 连接只发生在 start(host)；连不上只写日志，绝不抛错。
  */
 import { fileURLToPath } from 'node:url';
-import type { BlobInput, BlobRef, EventEnvelope, RunPhase, ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
+import type { BlobInput, BlobRef, EventEnvelope, RunPhase, ToolCallContext, ToolDef, World, WorldHost, WorldWebUiDecl } from 'cortico/core/types.ts';
 import { nowIso } from 'cortico/core/util.ts';
 import {
   ASTRBOT_CONFIG_GROUP,
@@ -20,17 +20,26 @@ import {
   AstrbotBridgeDriver,
   DEFAULT_HANDSHAKE_TIMEOUT_MS,
   type BridgeDriver,
+  type BridgeMode,
   type BridgeMessage,
   type Conv,
   type OutgoingImage,
   type ToolActor,
   type ToolInfo,
+  type ToolResult,
 } from './driver.ts';
 import { convOfEvent, findMessage, renderLatest, renderSearch } from './history.ts';
 import { describeSegment, imageAttachmentIndex, needsBridge, parseSegments, renderSegmentLine, type MessageSegment } from './message-segments.ts';
 import { EXTENSION_VERSION } from './version.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
+
+type ScopedTurn = { conv: Conv; turn: string; generation: number };
+type QqEvent = Parameters<WorldHost['pushEvent']>[0];
+type ScopedHost = WorldHost & {
+  /** Host archives the event outside the main session and uses a shareable Persona prefix and its active model. */
+  runScopedWorldTurn?: (event: QqEvent, tools: readonly ToolDef[]) => Promise<string>;
+};
 
 /** 一条消息最多带多大的图（原始字节）；再大就拒绝，免得把桥和 QQ 撑爆。 */
 export const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -42,6 +51,15 @@ function imageBlobs(images: OutgoingImage[] = []): BlobInput[] {
     mime: img.mime,
     fallbackText: '[图片]',
   }));
+}
+
+function componentBlobs(reply: ToolResult): BlobInput[] {
+  const blobs = imageBlobs(reply.images);
+  if (reply.audio) blobs.push({
+    name: reply.audio.name, mime: reply.audio.mime,
+    bytes: Buffer.from(reply.audio.base64, 'base64'), fallbackText: '[QQ 语音原件]',
+  });
+  return blobs;
 }
 
 function savedImage(segment: MessageSegment, blobs: BlobRef[] = []): BlobRef | undefined {
@@ -129,7 +147,9 @@ export interface AstrbotWorldOptions {
   /** `worlds.astrbot` 的活引用：热改的键现读即生效。 */
   cfg: AstrbotConfigSection;
   timezone: string;
+  storeBridgeToken?: (value: string) => void;
   ownerToolSecret?: { read(): string; store(value: string): void };
+  restart?: () => Promise<void>;
   /** 测试用：换掉真实驱动。 */
   driver?: BridgeDriver;
   /** 首次连接最多等多久；到点先继续启动，后台继续重连。 */
@@ -245,6 +265,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       'Read a QQ quote, merged forward, attachment details or another component of an observed message. ' +
       'Use the message #id and the 1-based component number shown in the QQ message. ' +
       'A nested path such as [2,3] selects the third entry of the second component. ' +
+      'To retrieve the original QQ voice file, select its exact component and set audio_file to true. ' +
       'Use the returned offset for more entries. In a QQ turn only the current conversation can be read.',
     tags: ['read'],
     parameters: {
@@ -257,6 +278,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
           minItems: 1, maxItems: 6, description: 'The component number and optional nested entry numbers.',
         },
         offset: { type: 'integer', minimum: 0, description: 'Page offset from the previous result.' },
+        audio_file: { type: 'boolean', description: 'Fetch the selected voice component as a file, even if a transcript exists.' },
         conv_kind: { type: 'string', enum: ['group', 'private'] },
         conv_id: { type: 'string', description: 'Specify the QQ conversation when reading outside a QQ turn.' },
       },
@@ -304,6 +326,10 @@ export class AstrbotWorld implements World {
   private host?: WorldHost;
   private driver?: BridgeDriver;
   private connected = false;
+  private switching = false;
+  private queueBusy = false;
+  private readonly incoming: BridgeMessage[] = [];
+  private conversationGeneration = 0;
   /** 见过的会话，按出现顺序；给环境提示词和状态工具用。 */
   private readonly convs = new Map<string, Conv>();
   /** 最后一条消息所在的会话；工具不指定会话时用它。 */
@@ -322,7 +348,7 @@ export class AstrbotWorld implements World {
   /** 同一批里出现多个 QQ 会话（比如私聊 + 群）：隐式发送会猜错，必须显式指定。 */
   private turnMultiConv = false;
   /** 最近见过的消息 id → 会话；reply_to 用它解析目标。 */
-  private knownMsgConv = new Map<string, Conv>();
+  private knownMsgConv = new Map<string, Conv | null>();
   /** 置位时刻；作为 onTurnEnded 万一没来时的兜底。 */
   private turnChannelAt = 0;
   /** 这一轮最后投递的 QQ 会话；状态工具用。 */
@@ -396,6 +422,11 @@ export class AstrbotWorld implements World {
     return {
       enabled: cfg.enabled !== false,
       connected: this.connected,
+      mode: this.driver?.mode,
+      modeKnown: !!this.driver?.modeRevision,
+      modeSynced: this.connected && !!this.driver?.modeRevision,
+      switching: this.switching,
+      safeAvailable: !!(this.host as ScopedHost | undefined)?.runScopedWorldTurn,
       wsUrl: cfg.wsUrl,
       tokenSet: !!cfg.token,
       includeTime: cfg.includeTime !== false,
@@ -431,6 +462,24 @@ export class AstrbotWorld implements World {
       invoke: async (panel, method, args) => {
         if (panel === 'connection') {
           if (method === 'state') return this.connectionState();
+          if (method === 'save-bridge-token') {
+            if (typeof args[0] !== 'string') throw new Error('桥接令牌格式无效');
+            if (!this.opts.storeBridgeToken) throw new Error('当前部署无法保存桥接令牌');
+            this.opts.storeBridgeToken(args[0].trim());
+            return { saved: true };
+          }
+          if (method === 'reconnect') {
+            if (this.opts.cfg.enabled === false || !this.opts.restart) throw new Error('AstrBot World 当前未启用');
+            if (this.switching || this.queueBusy || this.turnChannel) throw new Error('请等当前 QQ 处理结束后重连');
+            await this.opts.restart();
+            return { restarted: true };
+          }
+          if (method === 'switch-mode') {
+            const mode = args[0];
+            if ((mode !== 'full' && mode !== 'safe') || args[1] !== true) throw new Error('请先确认切换模式');
+            await this.switchMode(mode);
+            return this.connectionState();
+          }
           if (method === 'save-owner-token') {
             const value = typeof args[0] === 'string' ? args[0].trim() : '';
             if (!/^[\x21-\x7e]+$/.test(value)) throw new Error('工具令牌应使用无空格的可打印 ASCII 字符');
@@ -473,7 +522,9 @@ export class AstrbotWorld implements World {
         token: cfg.token,
         ownerToolToken: cfg.ownerToolsEnabled !== false ? this.opts.ownerToolSecret?.read() : undefined,
         // 告诉桥「我这边能不能读图」，桥据此决定原图要不要过来。
-        capabilities: { images: this.acceptsImages(host), message_segments: true, component_media: true },
+        capabilities: { images: this.acceptsImages(host), message_segments: true, component_media: true, component_audio: true,
+          isolated_turns: !!(host as ScopedHost).runScopedWorldTurn },
+        requireModeSync: true,
         reconnectBaseMs: cfg.reconnectBaseMs,
         reconnectMaxMs: cfg.reconnectMaxMs,
         handshakeTimeoutMs: this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
@@ -483,11 +534,16 @@ export class AstrbotWorld implements World {
     this.connected = driver.connected;
 
     driver.onState((connected) => {
+      if (this.driver !== driver) return;
+      if (!connected) this.invalidateQueue();
       this.connected = connected;
       void this.pushState(connected);
     });
     driver.onMessage((msg) => {
-      void this.onBridgeMessage(msg);
+      if (driver.modeRevision && !msg.notice) {
+        this.incoming.push(msg);
+        this.drainIncoming();
+      } else if (driver.mode !== 'safe') void this.onBridgeMessage(msg);
     });
     // 桥会带上它记得的会话（含重启前恢复的），主动发送要靠这份清单。
     driver.onReady?.((convs) => {
@@ -501,6 +557,7 @@ export class AstrbotWorld implements World {
     this.toolList = driver.tools;
     this.toolsSeen = false;
     driver.onTools((tools) => {
+      if (driver.mode === 'safe' || !driver.connected) return;
       const before = this.toolList.map((t) => t.name).join(',');
       const first = !this.toolsSeen;
       this.toolList = tools;
@@ -529,6 +586,7 @@ export class AstrbotWorld implements World {
       this.toolsSeen = true;
     });
     driver.onNotice((notice) => {
+      if (driver.mode === 'safe') return;
       void host
         .pushEvent({
           type: 'astrbot.notice',
@@ -548,6 +606,53 @@ export class AstrbotWorld implements World {
     // 到点后驱动仍在后台重连，连上会通过 onState 把状态推回来。
     await this.waitDriverStart(driver, this.opts.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS);
     this.connected = driver.connected;
+  }
+
+  private async switchMode(mode: BridgeMode): Promise<void> {
+    const driver = this.driver;
+    if (!driver?.changeMode || this.switching) throw new Error('桥未连接或正在切换');
+    if (mode === 'safe' && !(this.host as ScopedHost | undefined)?.runScopedWorldTurn) {
+      throw new Error('原版 Coo 尚未提供独立上下文，安全模式暂不可用');
+    }
+    this.switching = true;
+    try {
+      if (this.queueBusy || this.turnChannel) throw new Error('Coo 正在处理 QQ 消息，请等这一轮结束');
+      await driver.changeMode(mode);
+      this.incoming.length = 0;
+      this.clearTurn();
+      this.shotGrants.clear();
+      this.conversationGeneration++;
+    } finally {
+      this.switching = false;
+      this.drainIncoming();
+    }
+  }
+
+  private invalidateQueue(): void {
+    this.conversationGeneration++;
+    this.incoming.length = 0;
+    this.queueBusy = false;
+    this.clearTurn();
+    this.shotGrants.clear();
+  }
+
+  private drainIncoming(): void {
+    if (this.queueBusy || this.switching || !this.connected) return;
+    const next = this.incoming.shift();
+    if (!next) return;
+    this.queueBusy = true;
+    const generation = this.conversationGeneration;
+    void this.onBridgeMessage(next).then(queued => {
+      if (!queued && generation === this.conversationGeneration) this.finishIncoming();
+    }, error => {
+      this.host?.log.warn('QQ 消息处理失败', { error: String(error) });
+      if (generation === this.conversationGeneration) this.finishIncoming();
+    });
+  }
+
+  private finishIncoming(): void {
+    this.queueBusy = false;
+    this.drainIncoming();
   }
 
   /** 等首次连接，但最多等 timeoutMs；超时只记日志，不终止后台重连。 */
@@ -582,7 +687,7 @@ export class AstrbotWorld implements World {
     const driver = this.driver;
     this.driver = undefined;
     this.connected = false;
-    this.clearTurn();
+    this.invalidateQueue();
     if (driver) await driver.stop();
   }
 
@@ -594,7 +699,10 @@ export class AstrbotWorld implements World {
    * 处理，QQ 出口只服务本包自己收到的消息。
    */
   onEventsSettled(events: readonly EventEnvelope[], outcome: 'delivered' | 'discarded'): void {
-    if (outcome !== 'delivered') return;
+    if (outcome !== 'delivered') {
+      if (events.some(e => e.source === this.id && e.type === 'astrbot.message' && e.meta?.notice !== true)) this.finishIncoming();
+      return;
+    }
 
     const qq = events.filter(e => e.source === this.id && e.origin === 'external'
       && e.type === 'astrbot.message');
@@ -644,7 +752,9 @@ export class AstrbotWorld implements World {
 
   /** 一轮结束：下一次只有非 QQ 输入时，QQ 出口就该关上。 */
   onTurnEnded(): void {
+    const wasQq = this.turnChannel === 'qq';
     this.clearTurn();
+    if (wasQq) queueMicrotask(() => this.finishIncoming());
   }
 
   /** 运行阶段回到 idle 时也清掉 QQ 轮次，避免下一轮复用上一轮的 QQ 出口。 */
@@ -657,6 +767,16 @@ export class AstrbotWorld implements World {
   private qqTurnActive(): boolean {
     if (this.turnChannel !== 'qq') return false;
     return Date.now() - this.turnChannelAt < QQ_TURN_TTL_MS;
+  }
+
+  private scopeActive(scope: ScopedTurn): boolean {
+    return this.connected && this.conversationGeneration === scope.generation && this.driver?.mode === 'safe';
+  }
+
+  private ownerActor(driver: BridgeDriver): ToolActor | undefined {
+    const id = String(this.opts.cfg.ownerId ?? '').trim();
+    if (!id || this.opts.cfg.ownerToolsEnabled === false || driver.ownerTools !== true || !driver.ownerIds.includes(id)) return undefined;
+    return { kind: 'owner', id };
   }
 
   /** 这一轮建立过 QQ 轮次但已经超过安全 TTL。 */
@@ -711,7 +831,7 @@ export class AstrbotWorld implements World {
   }
 
   /** 桥送来一条消息：按配置的范围决定要不要投递，投递时把事实写清楚。 */
-  private async onBridgeMessage(msg: BridgeMessage): Promise<void> {
+  private async onBridgeMessage(msg: BridgeMessage): Promise<boolean | undefined> {
     const host = this.host;
     if (!host) return;
     if (!this.opts.cfg.enabled) return;
@@ -725,7 +845,9 @@ export class AstrbotWorld implements World {
     }
     this.rememberConv(msg.conv);
     if (msg.id) {
-      this.knownMsgConv.set(String(msg.id), msg.conv);
+      const key = String(msg.id);
+      const current = this.knownMsgConv.get(key);
+      this.knownMsgConv.set(key, current === null || (current && this.convKey(current) !== this.convKey(msg.conv)) ? null : msg.conv);
       while (this.knownMsgConv.size > 200) {
         const oldest = this.knownMsgConv.keys().next().value;
         if (oldest === undefined) break;
@@ -797,9 +919,7 @@ export class AstrbotWorld implements World {
       ? `${head}${noticeBody}`
       : `${head}${idPart}${senderName}${senderTag}：${body}${channelHint}`;
 
-    await host
-      .pushEvent(
-        {
+    const input: QqEvent = {
           type: 'astrbot.message',
           ts: msg.ts ?? nowIso(this.opts.timezone),
           source: this.id,
@@ -824,7 +944,32 @@ export class AstrbotWorld implements World {
             ...(msg.imageErrors ? { image_errors: msg.imageErrors } : {}),
             ...(msg.segments?.length ? { segments: msg.segments } : {}),
           },
+        };
+
+    if (this.driver?.mode === 'safe') {
+      const scopedHost = host as ScopedHost;
+      const umo = msg.conv.umo ?? msg.umo;
+      if (isNotice || !umo || !msg.id || !scopedHost.runScopedWorldTurn) return;
+      const scope = { conv: { ...msg.conv, umo }, turn: msg.id, generation: this.conversationGeneration };
+      let attempted = false;
+      const send = this.sendMessageTool(scope);
+      const tools = [this.historyTool(scope), this.readComponentTool(scope), {
+        ...send,
+        handler: async (args: Record<string, unknown>, ctx: Parameters<ToolDef['handler']>[1]) => {
+          attempted = true;
+          return send.handler(args, ctx);
         },
+      }];
+      const reply = (await scopedHost.runScopedWorldTurn(input, tools)).trim();
+      if (reply && !attempted && this.scopeActive(scope)) {
+        const result = await this.driver?.send(scope.conv, reply, undefined, undefined, false, [], { turn: scope.turn });
+        if (!result?.ok) host.log.warn('安全模式的 QQ 回复没有确认送达');
+      }
+      return;
+    }
+
+    return await host.pushEvent(
+        input,
         // 主人私聊立即；群只认被叫到；其他私聊和群聊合批；通知只排队。
         isNotice
           ? { trigger: 'piggyback' }
@@ -835,9 +980,10 @@ export class AstrbotWorld implements World {
             : called
               ? { trigger: 'flush' }
               : undefined,
-      )
+      ).then(() => !isNotice)
       .catch((err: unknown) => {
         host.log.warn('消息事件投递失败', { error: String(err) });
+        return false;
       });
   }
 
@@ -902,7 +1048,10 @@ export class AstrbotWorld implements World {
   private callToolDef(): ToolDef {
     return {
       ...CALL_TOOL_DECL,
-      handler: async (raw) => {
+      handler: async (raw, ctx) => {
+        if (this.switching || this.driver?.mode === 'safe' || this.turnMultiConv || (this.queueBusy && !this.qqTurnActive())) {
+          return { text: '当前模式或消息范围不允许调用通用 AstrBot 工具。', failed: true };
+        }
         const name = typeof raw.name === 'string' ? raw.name.trim() : '';
         if (!name) return { text: '没有给工具名。', failed: true };
         const args =
@@ -957,7 +1106,7 @@ export class AstrbotWorld implements World {
             };
           }
         }
-        const res = await driver.callTool(name, args, turn, actor);
+        const res = await driver.callTool(name, args, turn, actor, this.turnConv?.umo);
         // 调用开始时还 active：工具耗时再长也不把它误判成过期（过期轮次不复活）。
         if (startedActive) this.turnChannelAt = Date.now();
         if (!res.ok) {
@@ -968,16 +1117,20 @@ export class AstrbotWorld implements World {
           return { text: `工具 ${name} 没有执行：${reason}${code}`, failed: true };
         }
         const text = res.result?.trim() ? res.result : `工具 ${name} 执行完了，没有返回文字。`;
-        const blobs = name === 'cortico_read_message_component' ? imageBlobs(res.images) : [];
-        return blobs.length ? { text, blobs } : text;
+        const blobs = name === 'cortico_read_message_component' ? componentBlobs(res) : [];
+        return this.externalRead(ctx, text, this.turnConv, blobs);
       },
     };
   }
 
-  private sendMessageTool(): ToolDef {
+  private sendMessageTool(scope?: ScopedTurn): ToolDef {
     return {
       ...ASTRBOT_TOOL_DECLS[0],
       handler: async (args) => {
+        if (scope ? !this.scopeActive(scope) : this.switching || this.turnMultiConv || this.driver?.mode === 'safe'
+          || (this.queueBusy && !this.qqTurnActive())) {
+          return { text: this.turnMultiConv ? '本轮包含多个 QQ 会话，请按原会话重试。' : '本轮没有可用的 QQ 发送授权。', failed: true };
+        }
         const text = typeof args.text === 'string' ? args.text.trim() : '';
         const handle = typeof args.image === 'string' ? args.image.trim() : '';
         const voice = args.voice === true;
@@ -986,15 +1139,13 @@ export class AstrbotWorld implements World {
         if (voice && handle) return { text: '语音和图片不能是同一条消息，未发送。', failed: true };
 
         // 目标：QQ 轮次可以省略，回触发会话；其他轮次必须显式指定。
-        const explicitTarget =
-          (typeof args.conv_id === 'string' && args.conv_id.trim() !== '')
-          || (typeof args.conv_id === 'number' && Number.isFinite(args.conv_id))
+        const explicitTarget = (args.conv_id != null && args.conv_id !== '')
           || (typeof args.reply_to === 'string' && args.reply_to.trim() !== '');
 
         // 渠道校验：
         // - QQ 轮次：可以隐式回触发会话；
         // - 非 QQ 轮次：只有配置了主人 QQ，且目标是桥见过的会话，才允许主动发送。
-        const qqTurn = this.qqTurnActive();
+        const qqTurn = !!scope || this.qqTurnActive();
         if (!qqTurn) {
           if (this.turnExpired()) {
             return {
@@ -1030,7 +1181,7 @@ export class AstrbotWorld implements World {
         }
 
         // 发送必须是桥见过的会话：没有 UMO 的显式目标先拒绝，别让桥回误导性的 missing_umo。
-        const picked = this.pickConv(args, { requireUmo: true });
+        const picked = this.pickConv(args, { requireUmo: true, bound: scope?.conv ?? (qqTurn ? this.turnConv : undefined) });
         if (picked.error) {
           this.host?.log.warn('QQ 出口被拒：会话参数不合法或桥没见过该会话', { error: picked.error });
           return { text: picked.error, failed: true };
@@ -1079,7 +1230,13 @@ export class AstrbotWorld implements World {
 
         const replyTo = typeof args.reply_to === 'string' && args.reply_to !== '' ? args.reply_to : undefined;
         this.touchTurn();
-        const result = await driver.send(conv, text, replyTo, image, voice, mention);
+        const actor = qqTurn ? undefined : this.ownerActor(driver);
+        if (driver.modeRevision && !qqTurn && !actor) {
+          return { text: '主动发送需要 AstrBot 验证主人 QQ 和独立令牌。', failed: true };
+        }
+        const result = await driver.send(conv, text, replyTo, image, voice, mention, {
+          turn: scope?.turn ?? (qqTurn ? this.turnMsgId : ''), actor,
+        });
         // 发送本身耗时不该把这一轮挤到过期；开始时就 active 才续期。
         if (qqTurn) this.turnChannelAt = Date.now();
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
@@ -1117,7 +1274,7 @@ export class AstrbotWorld implements World {
    */
   private pickConv(
     args: Record<string, unknown>,
-    opts: { allowLast?: boolean; requireUmo?: boolean } = {},
+    opts: { requireUmo?: boolean; bound?: Conv } = {},
   ): { conv?: Conv; error?: string } {
     const idArg = args.conv_id;
     let id = '';
@@ -1128,6 +1285,15 @@ export class AstrbotWorld implements World {
       id = String(idArg);
     } else if (idArg !== undefined && idArg !== null) {
       return { error: 'conv_id 必须是字符串或数字，未发送。' };
+    }
+
+    const bound = opts.bound;
+    if (bound) {
+      if (opts.requireUmo && !bound.umo) return { error: '桥还没见过这个会话（没有 UMO）。' };
+      if (id && id !== bound.id && id !== bound.umo || args.conv_kind && args.conv_kind !== bound.kind) {
+        return { error: '只能操作当前 QQ 会话。' };
+      }
+      return { conv: bound };
     }
 
     if (id !== '') {
@@ -1141,19 +1307,10 @@ export class AstrbotWorld implements World {
       ) {
         return { error: `conv_kind 只能是 group 或 private，收到 ${String(kindArg)}，未发送。` };
       }
-      const fallbackKind = this.turnConv?.kind ?? this.lastConv?.kind ?? 'group';
-      const kind =
-        kindArg === 'private' ? 'private' : kindArg === 'group' ? 'group' : fallbackKind;
-      // 桥已改成单通道：显式目标必须能补上 UMO，否则这一帧会被拒。
-      const known = [...this.convs.values()].find(
-        (c) => c.kind === kind && c.id === id && !!c.umo,
-      );
-      if (known) return { conv: { ...known, kind, id } };
-      // 发送要求桥真的见过这个会话；历史和已知但没 UMO 的 id 仍按 kind:id 查询。
-      if (opts.requireUmo) {
-        return { error: '桥还没见过这个会话（没有 UMO），先让这个会话发一条消息' };
-      }
-      return { conv: { kind, id } };
+      const known = [...this.convs.values()].filter(c => c.umo && (c.id === id || c.umo === id) && (!kindArg || c.kind === kindArg));
+      if (known.length === 1) return { conv: known[0] };
+      if (known.length > 1) return { error: '多个平台有同一会话号，请指定完整 UMO。' };
+      return { error: '桥还没见过这个会话（没有 UMO），先让这个会话发一条消息' };
     }
 
     const replyTo = args.reply_to;
@@ -1162,12 +1319,7 @@ export class AstrbotWorld implements World {
       const hit = this.knownMsgConv.get(key);
       if (hit) return { conv: hit };
     }
-    // 同一批里既有私聊又有群：隐式目标会猜错，发送必须显式指定。
-    if (this.turnMultiConv && !opts.allowLast) return {};
-    // 这一轮有 QQ 消息就以这一轮的会话为准；没有就拒绝，不回退 lastConv。
-    if (this.qqTurnActive() && this.turnConv) return { conv: this.turnConv };
-    const last = opts.allowLast ? this.lastConv : undefined;
-    return last ? { conv: last } : {};
+    return {};
   }
 
   /** 记下「这个会话、这条消息可以发图到什么时候」；顺手清掉过期项。 */
@@ -1200,21 +1352,55 @@ export class AstrbotWorld implements World {
     return !!grant && grant.until > Date.now() && grant.msgId === this.turnMsgId;
   }
 
-  private historyTool(): ToolDef {
+  private readTarget(args: Record<string, unknown>, scope?: ScopedTurn): { conv?: Conv; error?: string } {
+    if (scope ? !this.scopeActive(scope) : this.switching || this.turnMultiConv || this.turnExpired() || this.driver?.mode === 'safe'
+      || (this.queueBusy && !this.qqTurnActive())) {
+      return { error: '无法确认本轮的 QQ 读取授权。' };
+    }
+    return this.pickConv(args, { bound: scope?.conv ?? (this.qqTurnActive() ? this.turnConv : undefined) });
+  }
+
+  private async authorizeRead(conv: Conv, scope?: ScopedTurn): Promise<boolean> {
+    const driver = this.driver;
+    if (!driver?.modeRevision) return true;
+    if (!driver.connected || !conv.umo) return false;
+    const turn = scope?.turn ?? (this.qqTurnActive() ? this.turnMsgId : '');
+    const revision = driver.modeRevision;
+    const actor = turn ? undefined : this.ownerActor(driver);
+    if (!turn && !actor) return false;
+    const reply = await driver.callTool('cortico_authorize_history', { umo: conv.umo }, turn, actor, turn ? conv.umo : undefined);
+    return reply.ok && driver === this.driver && driver.modeRevision === revision && !this.switching
+      && (scope ? this.scopeActive(scope) : !turn || (this.qqTurnActive() && this.turnMsgId === turn && this.turnConv?.umo === conv.umo));
+  }
+
+  private async externalRead(ctx: ToolCallContext, text: string, conv?: Conv, blobs: BlobInput[] = []) {
+    if (!this.host || !ctx.queueExternalEvents || !this.driver?.modeRevision || this.driver.mode === 'safe') {
+      return blobs.length ? { text, blobs } : text;
+    }
+    const record = await this.host.pushEvent({
+      source: this.id, origin: 'external', type: 'astrbot.read_result',
+      ts: nowIso(this.opts.timezone), text, blobs, meta: conv ? { umo: conv.umo } : undefined,
+    }, { deliver: false });
+    ctx.queueExternalEvents([record]);
+    return '已读取，内容见随本次调用返回的 QQ 外部资料。';
+  }
+
+  private historyTool(scope?: ScopedTurn): ToolDef {
     return {
       ...ASTRBOT_TOOL_DECLS[2],
-      handler: async (args) => {
+      handler: async (args, ctx) => {
         const host = this.host;
         if (!host) return { text: '这个 World 还没启动，读不到历史。', failed: true };
 
-        const picked = this.pickConv(args, { allowLast: true });
+        const picked = this.readTarget(args, scope);
         if (picked.error) {
           return { text: picked.error, failed: true };
         }
         const conv = picked.conv;
         if (!conv) {
-          return { text: '还不知道查哪个会话：没有指定 conv_id，也还没有收到过消息。', failed: true };
+          return { text: '没有当前 QQ 会话，请显式指定目标。', failed: true };
         }
+        if (!await this.authorizeRead(conv, scope)) return { text: '该 QQ 会话未获读取授权。', failed: true };
 
         const limit = clampInt(args.limit, 20, 1, 100);
         const keyword = typeof args.keyword === 'string' ? args.keyword.trim() : '';
@@ -1225,14 +1411,14 @@ export class AstrbotWorld implements World {
           ? renderSearch(host.store, conv, keyword, limit, context, sender || undefined)
           : renderLatest(host.store, conv, limit, sender || undefined);
 
-        if (text) return text;
+        if (text) return this.externalRead(ctx, text, conv);
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
         return `${where}里没有找到符合条件的消息。`;
       },
     };
   }
 
-  private readComponentTool(): ToolDef {
+  private readComponentTool(scope?: ScopedTurn): ToolDef {
     return {
       ...ASTRBOT_TOOL_DECLS[3],
       handler: async (args, ctx) => {
@@ -1244,13 +1430,14 @@ export class AstrbotWorld implements World {
             path.some((index) => !Number.isInteger(index) || index < 1 || index > 120)) {
           return { text: '请提供消息号和有效的组件位置。', failed: true };
         }
-        const { conv, error } = this.pickConv(args, { allowLast: false });
+        const { conv, error } = this.readTarget(args, scope);
         if (!conv) return { text: error || '请指定这条消息所在的 QQ 会话。', failed: true };
         if (this.qqTurnActive() && (!this.turnConv || this.turnMultiConv ||
             (this.turnConv.umo && conv.umo ? this.turnConv.umo !== conv.umo :
               this.turnConv.kind !== conv.kind || this.turnConv.id !== conv.id))) {
           return { text: '只可查看当前 QQ 会话中的组件。', failed: true };
         }
+        if (!await this.authorizeRead(conv, scope)) return { text: '该 QQ 会话未获读取授权。', failed: true };
         const event = findMessage(host.store, conv, id);
         if (!event) return { text: '这个会话没有这条消息的记录。', failed: true };
         let parts = parseSegments(event.meta?.segments);
@@ -1258,14 +1445,27 @@ export class AstrbotWorld implements World {
 
         let part: MessageSegment | undefined;
         const offset = clampInt(args.offset, 0, 0, 120);
-        for (const index of path) {
+        for (const [depth, index] of path.entries()) {
           part = parts[index - 1];
           if (!part) return { text: '该位置没有可查看的组件。', failed: true };
-          if (needsBridge(part)) {
-            const result = await this.callToolDef().handler({
-              name: 'cortico_read_message_component', args: { message_id: id, path, offset },
-            }, ctx);
-            return result;
+          const wantsAudio = args.audio_file === true;
+          if (needsBridge(part) || (wantsAudio && part.type === 'record' && depth === path.length - 1)) {
+            const driver = this.driver;
+            if (!driver?.connected) return { text: '桥未连接。', failed: true };
+            const turn = scope?.turn ?? (this.qqTurnActive() ? this.turnMsgId : '');
+            const revision = driver.modeRevision;
+            const actor = turn ? undefined : this.ownerActor(driver);
+            if (!turn && !actor) return { text: '读取组件需要明确授权。', failed: true };
+            const request = { message_id: id, path, offset, ...(wantsAudio ? { audio_file: true } : {}), ...(revision ? { umo: conv.umo } : {}) };
+            const result = await driver.callTool('cortico_read_message_component', request, turn, actor, turn ? conv.umo : undefined);
+            const activeTurn = scope ? this.scopeActive(scope) : !turn || (this.qqTurnActive() && this.turnMsgId === turn && this.turnConv?.umo === conv.umo);
+            if (!result.ok || driver !== this.driver || driver.modeRevision !== revision || ctx.signal?.aborted || this.switching || !activeTurn) {
+              return { text: result.note || result.error || '读取授权已失效。', failed: true };
+            }
+            const blobs = componentBlobs(result);
+            const text = (result.result ?? '') + (result.audio && !host.modelFacts.accepts(result.audio.mime)
+              ? '\n原件已作为附件交给 Coo；当前模型无法直接听此格式，可用语音转写读取内容。' : '');
+            return this.externalRead(ctx, text, conv, blobs);
           }
           parts = part.children ?? [];
         }
@@ -1295,15 +1495,13 @@ export class AstrbotWorld implements World {
             if (original && convOfEvent(original)?.umo === conv.umo) images = directSavedImages(original);
           }
           const handles = new Set(images.filter((blob) => host.blob(blob.handle)).map((blob) => blob.handle));
-          if (handles.size) return {
-            text: details.join('\n'),
-            blobs: [...handles].map((handle) => ({ handle, fallbackText: '[QQ 图片]' })),
-          };
+          if (handles.size) return this.externalRead(ctx, details.join('\n'), conv,
+            [...handles].map((handle) => ({ handle, fallbackText: '[QQ 图片]' })));
           if (part.type === 'image' && imageAttachmentIndex(part) !== undefined) {
             details.push('图片附件未在当前历史中找到。');
           }
         }
-        return details.join('\n');
+        return this.externalRead(ctx, details.join('\n'), conv);
       },
     };
   }

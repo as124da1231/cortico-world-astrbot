@@ -213,7 +213,7 @@ token 输入框留空表示保持原值；要清空必须显式点「清除已�
 构建：
 
 ```bash
-pnpm build:web   # src/webui/client.ts → dist/webui.js + dist/webui.css
+pnpm build:web   # 构建带内容摘要的连接面板资源并更新 package.json
 ```
 
 `package.json` 的 `cortico.webUiClient` / `webUiStyle` 指向这两个产物。

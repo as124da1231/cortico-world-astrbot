@@ -70,14 +70,14 @@
 .astrbot-group { margin-top: 24px; }
 
 .astrbot-glabel {
-  margin-bottom: 12px;
-  color: var(--ink-dim);
-  font-size: 10px;
-  letter-spacing: .14em;
-  text-transform: uppercase;
+  margin-bottom: 8px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.astrbot-group .check { margin-bottom: 16px; }
+.astrbot-group > .check,
+.astrbot-group > .astrbot-note + .fieldrow { margin-top: 10px; }
 
 .astrbot-group .fieldrow .fieldlabel {
   margin-bottom: 6px;
@@ -88,6 +88,7 @@
 }
 
 .astrbot-group .fieldrow + .fieldrow { margin-top: 14px; }
+.astrbot-group .pill + .astrbot-note { margin-top: 6px; }
 
 .astrbot-group input.field,
 .astrbot-group select.field { width: 100%; }
@@ -113,6 +114,15 @@
   gap: 0 20px;
 }
 
+.astrbot-advanced {
+  margin-top: 20px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.astrbot-advanced > summary { cursor: pointer; }
+.astrbot-advanced > .astrbot-group { margin-top: 14px; }
+
 /* ---------- 保存 ---------- */
 
 .astrbot-submit {
@@ -126,31 +136,20 @@
 }
 
 .astrbot-note {
-  max-width: 330px;
   color: var(--ink-dim);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
-.astrbot-gnote {
-  margin-bottom: 14px;
-  color: var(--ink-dim);
-  font-size: 11.5px;
-  line-height: 1.6;
-}
-
-.astrbot-tokenrow {
+.astrbot-inline {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
 
-.astrbot-tokenrow input.field {
-  flex: 1;
-  min-width: 0;
-}
-
-.astrbot-tokenrow .btn { flex: none; }
+.astrbot-inline + .astrbot-note { margin-top: 6px; }
+.astrbot-token-actions { margin-top: 6px; }
 
 .astrbot-loadfail {
   display: flex;
@@ -159,7 +158,7 @@
   gap: 12px;
 }
 
-.astrbot-submit .rowbar { flex: none; }
+.astrbot-submit .rowbar { flex: 1; min-width: 0; }
 .astrbot-submit .msgline { font-size: 11.5px; }
 
 /* ---------- 右栏 ---------- */

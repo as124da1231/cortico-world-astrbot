@@ -8,11 +8,11 @@ QQ 里的人继续在群和私聊里说话；AstrBot 继续管账号、插件、
 
 群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；Coo 对话里可以使用 AstrBot 已授权的主人身份和独立工具令牌调用。
 
-**当前版本 1.3.8**
+**当前版本 1.3.9**
 
 项目地址：[as124da1231/cortico-world-astrbot](https://github.com/as124da1231/cortico-world-astrbot)。
 
-双端升级到 1.3.8 后，Coo 可以查看 QQ 引用、合并转发和附件详情。引文保留可用的原图和转写，转发可按条展开，图片和语音按需读取。文件和视频提供名称、大小等适配器已返回的信息。媒体来源失效时，Coo 会说明当前能读到的内容。
+Coo 可以查看 QQ 引用、合并转发和附件详情。引用保留可用的原图和转写，转发可按条展开，图片和语音按需读取。文件和视频提供名称、大小等适配器已返回的信息。媒体来源失效时，Coo 会说明当前能读到的内容。
 
 从 1.2.5 起，本包与 `astrbot_plugin_cortico_bridge` 的版本号保持一致。
 
@@ -49,7 +49,7 @@ Cortico Core（Persona、Memory、事件流）
 | QQ 侧 | [`astrbot_plugin_cortico_bridge`](https://github.com/as124da1231/astrbot_plugin_cortico_bridge) | AstrBot 的插件目录 |
 | Cortico 侧 | `cortico-world-astrbot`（本包） | Cortico 的 `extensions/` |
 
-两个包按同一版协议 v1 通信，**必须都装**，单独装哪一半都不通。先装 AstrBot 插件、拿到它的地址和 token，再来填本包的 `wsUrl` / `token`。
+两个包按同一版协议 v2 通信。先装 AstrBot 插件、拿到它的地址和 token，再来填本包的 `wsUrl` / `token`。
 
 QQ 账号走的是 OneBot 这类非官方协议，账号有被限制的风险——这个风险来自 QQ 接入方式本身，与本包无关，装之前请自行判断。
 
@@ -68,13 +68,17 @@ QQ 账号走的是 OneBot 这类非官方协议，账号有被限制的风险—
 corepack pnpm add cortico-world-astrbot
 ```
 
-装完先到 **Coo 的 World 页**启用「AstrBot · QQ」——World 面板里没有启用开关，启停只在 World 页。然后打开本 World 的「连接」页，填好 `wsUrl` 与 `token`，保存，再按页面提示重启 World。
+装完到 **Coo → World → AstrBot · QQ → 连接**，填写 AstrBot 桥地址和「桥接令牌（Token）」，保存并应用。在 Coo 的 World 页启用扩展。跨机连接使用 `wss://`，令牌在 AstrBot 桥插件的「概览」复制。
 
-### 升级至 1.3.8
+### 升级至 1.3.9
 
-1. 将 AstrBot 桥和 Coo World 一起升到 1.3.8。桥要求 **AstrBot ≥ 4.29.1**。旧会话、群名单和普通转发的连接设置可以沿用。
+1. 将 AstrBot 桥和 Coo World 一起升到 1.3.9。桥要求 **AstrBot ≥ 4.29.1**。两端交换协议 v2，和 1.3.8 及更早版本混装时会停止接管。原有模型、群名单、会话和连接配置可继续使用。
 2. 在 AstrBot 插件设置中复核已授权工具。`tools_risks` 中明确标为 `read` 或 `write` 的工具才会被 `*` 纳入。未分类的工具需要单独点名和管理员授权。
 3. 如需在 Coo 对话里用主人身份调用工具，在 AstrBot 设置 `owner_tool_qq` 和 `owner_tool_token`，再到 Coo「连接」填写相同的账号和工具令牌。工具令牌独立于桥 token。跨机工具授权使用 `wss://`。
+
+「连接」页可以确认切换模式，两端同步后生效。完整模式使用 Coo 主对话，QQ 回复可能引用控制台里的对话内容，也能调用已授权的工具。安全模式按 QQ 会话隔离上下文，只开放当前 QQ 会话的聊天工具。两种模式都用 Coo 当前的模型。
+
+**宿主兼容性：** 原版 Coopanion 0.2.23 支持完整模式。安全模式需要额外提供独立轮次接口的宿主，扩展包安装后可在「连接」页检查是否可用。如果 AstrBot 此前保存为安全模式，换回原版 Coo 后可以在「连接」页确认切换为完整模式，再恢复 QQ 接管。
 
 ## 它做什么
 
@@ -145,12 +149,11 @@ QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过�
 
 群范围、`mention` / `all` 消息范围、称呼和发送频率都由 AstrBot 插件统一控制，World 不再重复配置。
 
-`wsUrl`、`token`、`reconnect*` 是建立连接时用的，保存后要点「重启 World」才生效；`includeTime`、`channelHint`、`ownerId` 保存后即时生效。`allowAtAll` 没有面板开关，直接改部署的 `config.json` 后立即生效。
+在 Coo「连接」页修改桥地址、令牌或重连参数后，点「保存并应用」即可让已启用的 World 重新连接。桥接令牌保存在部署配置里，通用配置页只提供非敏感设置。`includeTime`、`channelHint`、`ownerId` 保存后即时生效。`allowAtAll` 可在通用配置页或部署的 `config.json` 中修改。
 
 「连接」页的几条行为：
 
-- token 输入框留空表示**保持原值**；要真正删掉，点「清除已存 token」再保存。
-- 另建的 token 必须两边一致；AstrBot 插件那边也要同步清空或改成不校验。
+- 「桥接令牌（Token）」留空会保留原值。要删除，点「清除已保存的令牌」再保存。跨机连接清除后会断开。
 - 保存期间表单会锁住，避免等待期的修改被刷新覆盖；失败时保留输入，可以直接重试。
 - 主人 QQ 只接受数字、最长 20 位；不在 AstrBot 管理员名单里时，工具调用会失败并说明原因。
 
@@ -159,25 +162,25 @@ QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过�
 一条 WS 连接，JSON 帧。客户端连上后先自报身份，并声明自己的能力：
 
 ```json
-{ "t": "hello", "v": 1, "token": "…", "name": "Cortico",
+{ "t": "hello", "v": 2, "token": "…", "name": "Cortico",
   "capabilities": { "images": true } }
 ```
 
-- `v` 必须是 `1`；版本不对桥会以 `4004` 关闭，token 不对是 `4003`，第一帧不是 hello 是 `4002`。
+- `v` 必须是 `2`；版本不对桥会以 `4004` 关闭，token 不对是 `4003`，第一帧不是 hello 是 `4002`。
 - token 也可以放在 `Authorization: Bearer …` 头里；两种都出现时必须一致。
 - `capabilities.images` 表示本端模型能直接读图；为真时桥才附原图，否则自己转成文字。这个值由 Cortico 侧按当前端点的多模态能力算出来，只在**每次重连握手时**刷新——中途改了端点设置要等重连（或重启进程）才生效。
 
 桥在握手后、以及语音/工具配置变化时推 `ready`：
 
 ```json
-{ "t": "ready", "v": 1, "channel": "qq",
+{ "t": "ready", "v": 2, "channel": "qq", "mode": "full", "modeRevision": "当前代次",
   "self": { "id": "…", "name": "…" }, "admins": ["42"],
   "tts": { "ready": true, "provider": "edge_tts" },
   "conversations": [
     { "umo": "default:GroupMessage:123456", "kind": "group", "id": "123456", "age_sec": 12 } ] }
 ```
 
-经桥 token 认证后，`admins` 是 AstrBot 的管理员名单，World 据此给出「主人」标记与截图授权——不在两边各维护一份名单。`tts` 从 1.3.0 起从布尔值变成 `{ ready, provider }`；World 两种都认。1.3.6 起 `ready` 还带 `conversations[]`（最多 20 条最近会话，含重启前恢复的），World 用它支持主动发送。**收到 `ready` 之后才算真正就绪**；只 TCP 连上不算。
+`admins` 是 AstrBot 的管理员名单，World 据此判定主人身份。`tts` 表示语音回复是否可用。`conversations` 包含最多 20 条最近会话，供完整模式下的主人主动发送使用。桥收到 `mode-accept` 并回复 `mode-status` 的 `active: true` 后开始接管。
 
 桥推消息：
 

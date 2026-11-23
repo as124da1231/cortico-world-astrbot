@@ -52,7 +52,7 @@ function deliverForCore(world: AstrbotWorld, host: FakeHost, events: EventEnvelo
 function groupMsg(patch: Record<string, unknown> = {}) {
   return {
     id: 'm1',
-    conv: { kind: 'group' as const, id: '123456', name: '测试群' },
+    conv: { kind: 'group' as const, id: '123456', name: '测试群', umo: 'default:GroupMessage:123456' },
     sender: { id: '42', name: '小明' },
     text: '在吗',
     ...patch,
@@ -181,6 +181,26 @@ describe('装配', () => {
     expect(st.tts).toEqual({ ready: true, provider: 'edge_tts' });
     expect(st).not.toHaveProperty('groups');
     expect(st).not.toHaveProperty('privateMode');
+  });
+
+  it('桥接令牌可在连接页更新和清除，状态和通用配置不返回令牌', async () => {
+    const cfg = config({ token: 'original-fixture-token' });
+    const world = new AstrbotWorld({
+      cfg,
+      timezone: 'Asia/Shanghai',
+      storeBridgeToken: (value) => { cfg.token = value; },
+    });
+    const ui = world.webUi();
+    const invoke = ui.invoke!;
+    expect(ui.config?.[0]?.schema.properties).not.toHaveProperty(['worlds.astrbot.token']);
+    expect(await invoke('connection', 'state', [])).toMatchObject({ tokenSet: true });
+    await expect(invoke('connection', 'save-bridge-token', [])).rejects.toThrow();
+    expect(cfg.token).toBe('original-fixture-token');
+    expect(await invoke('connection', 'save-bridge-token', [' new-fixture-token '])).toEqual({ saved: true });
+    expect(cfg.token).toBe('new-fixture-token');
+    expect(JSON.stringify(await invoke('connection', 'state', []))).not.toContain(cfg.token);
+    await invoke('connection', 'save-bridge-token', ['']);
+    expect(await invoke('connection', 'state', [])).toMatchObject({ tokenSet: false });
   });
 
   it('连接面板拒绝没有的方法', async () => {
@@ -529,7 +549,7 @@ describe('发消息工具', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('多个 QQ 会话');
   });
 
-  it('多会话轮次里，conv_id 和 reply_to 都能指定目标', async () => {
+  it('混合轮次不允许通过 conv_id 或 reply_to 选择其他身份', async () => {
     const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage({
       id: 'm-p',
@@ -561,9 +581,7 @@ describe('发消息工具', () => {
       toolCtx(),
     );
 
-    expect(driver.sent).toHaveLength(2);
-    expect(driver.sent[0]?.conv).toMatchObject({ kind: 'private', id: '999' });
-    expect(driver.sent[1]?.conv).toMatchObject({ kind: 'private', id: '999' });
+    expect(driver.sent).toHaveLength(0);
   });
 
   it('只有 QQ 通知时，不建立轮次也不清上一轮', async () => {
@@ -576,7 +594,7 @@ describe('发消息工具', () => {
           origin: 'external',
           source: 'astrbot',
           text: '在吗',
-          meta: { conv: { kind: 'group', id: '123456', name: '测试群' }, message_id: 'm1' },
+          meta: { conv: { kind: 'group', id: '123456', name: '测试群', umo: 'default:GroupMessage:123456' }, message_id: 'm1' },
         } as unknown as EventEnvelope,
       ],
       'delivered',
@@ -825,33 +843,35 @@ describe('历史检索', () => {
   });
 
   it('读最近消息，按时间升序', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
+    const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage(groupMsg({ id: 'm1', text: '第一句' }));
     await Promise.resolve();
     driver.emitMessage(groupMsg({ id: 'm2', text: '第二句' }));
     await Promise.resolve();
 
+    settle(world, host);
     const text = textOf(await handlerOf(world, 'astrbot_read_history')({}, toolCtx()));
     expect(text.indexOf('第一句')).toBeLessThan(text.indexOf('第二句'));
   });
 
   it('关键词搜索命中', async () => {
-    const { driver, world } = await mount({ mode: 'all' });
+    const { driver, host, world } = await mount({ mode: 'all' });
     driver.emitMessage(groupMsg({ id: 'm1', text: '今天吃什么' }));
     await Promise.resolve();
     driver.emitMessage(groupMsg({ id: 'm2', text: '随便' }));
     await Promise.resolve();
 
+    settle(world, host);
     const text = textOf(await handlerOf(world, 'astrbot_read_history')({ keyword: '吃' }, toolCtx()));
     expect(text).toContain('今天吃什么');
   });
 
   it('不同会话互不串台', async () => {
     const { driver, world } = await mount({ mode: 'all' });
-    driver.emitMessage(groupMsg({ id: 'g1', text: '在这个群' }));
+    driver.emitMessage(groupMsg({ id: 'g1', text: '在这个群', conv: { kind: 'group', id: '123456', umo: 'default:GroupMessage:123456' } }));
     await Promise.resolve();
     driver.emitMessage(
-      groupMsg({ id: 'p1', text: '在另一个群', conv: { kind: 'group', id: '999', name: '别的群' } }),
+      groupMsg({ id: 'p1', text: '在另一个群', conv: { kind: 'group', id: '999', name: '别的群', umo: 'default:GroupMessage:999' } }),
     );
     await Promise.resolve();
 
@@ -862,12 +882,12 @@ describe('历史检索', () => {
     expect(text).not.toContain('在这个群');
   });
 
-  it('没有记录时如实说明', async () => {
+  it('拒绝读取从未见过的会话', async () => {
     const { world } = await mount({ mode: 'all' });
     const text = textOf(
       await handlerOf(world, 'astrbot_read_history')({ conv_id: '1', conv_kind: 'group' }, toolCtx()),
     );
-    expect(text).toContain('没有找到');
+    expect(text).toContain('桥还没见过这个会话');
   });
 
   it('别的会话命中再多，也不会把本会话的命中挤掉', async () => {
@@ -878,12 +898,12 @@ describe('历史检索', () => {
         groupMsg({
           id: `b${i}`,
           text: `别处的找 ${i}`,
-          conv: { kind: 'group', id: '999', name: '别的群' },
+          conv: { kind: 'group', id: '999', name: '别的群', umo: 'default:GroupMessage:999' },
         }),
       );
       await Promise.resolve();
     }
-    driver.emitMessage(groupMsg({ id: 'a1', text: '我们要找的这句' }));
+    driver.emitMessage(groupMsg({ id: 'a1', text: '我们要找的这句', conv: { kind: 'group', id: '123456', umo: 'default:GroupMessage:123456' } }));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -903,11 +923,11 @@ describe('历史检索', () => {
       groupMsg({
         id: 'b1',
         text: '别处的秘密',
-        conv: { kind: 'group', id: '999', name: '别的群' },
+        conv: { kind: 'group', id: '999', name: '别的群', umo: 'default:GroupMessage:999' },
       }),
     );
     await Promise.resolve();
-    driver.emitMessage(groupMsg({ id: 'a1', text: '本群普通聊天' }));
+    driver.emitMessage(groupMsg({ id: 'a1', text: '本群普通聊天', conv: { kind: 'group', id: '123456', umo: 'default:GroupMessage:123456' } }));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -925,6 +945,19 @@ describe('历史检索', () => {
 });
 
 describe('QQ 组件入口', () => {
+  it('按需读取有转写的语音原件并交给 Coo', async () => {
+    const { driver, host, world } = await mount();
+    driver.emitMessage(groupMsg({ segments: [{ type: 'record', fields: { media_state: 'described', text: '已有转写' } }] }));
+    driver.toolResult = { ok: true, result: 'QQ 原件已下载。', audio: { mime: 'audio/silk', base64: 'AQID', name: 'qq-voice.silk' } };
+    settle(world, host);
+    const handler = toolHandler(world, 'astrbot_read_message_component');
+    expect(await handler({ message_id: 'm1', path: [1] }, toolCtx())).toContain('已有转写');
+    expect(driver.toolCalls).toHaveLength(0);
+    const result = await handler({ message_id: 'm1', path: [1], audio_file: true }, toolCtx());
+    expect(driver.toolCalls[0]?.args).toMatchObject({ audio_file: true, path: [1] });
+    expect(result).toMatchObject({ blobs: [{ mime: 'audio/silk', name: 'qq-voice.silk', bytes: Buffer.from([1, 2, 3]) }] });
+  });
+
   it('引用图片保留附件，展开引用或图片都能返回原图', async () => {
     const { driver, host, world } = await mount();
     const handle = 'log:quote.png';
@@ -1335,7 +1368,7 @@ describe('工具桥接', () => {
     expect(text).toContain('不在 AstrBot 的管理员名单');
   });
 
-  it('World 不再过滤群消息，最后一条成为工具身份', async () => {
+  it('两个 QQ 会话混入同一批时不能借最后一条消息的工具权限', async () => {
     const { driver, host, world } = await mount({ mode: 'mention' });
     driver.emitMessage(groupMsg({ id: 'm1', mentioned: true }));
     await Promise.resolve();
@@ -1351,7 +1384,7 @@ describe('工具桥接', () => {
     settle(world, host);
 
     await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
-    expect(driver.toolCalls[0]?.turn).toBe('m2');
+    expect(driver.toolCalls).toHaveLength(0);
   });
 
   it('通知不会把默认回复会话带到别的群', async () => {
@@ -1470,7 +1503,7 @@ describe('工具桥接', () => {
 // W-001 / W-003 / W-008 / W-015：轮次判定与身份收紧
 // ---------------------------------------------------------------------------
 
-const QQ_CONV = { kind: 'group', id: '123456', name: '测试群' } as const;
+const QQ_CONV = { kind: 'group', id: '123456', name: '测试群', umo: 'default:GroupMessage:123456' } as const;
 
 function humanEvent(id = 'm1', conv: Record<string, unknown> = QQ_CONV): EventEnvelope {
   return {
@@ -1663,7 +1696,7 @@ describe('工具身份：过期轮次不得回退 owner', () => {
 
 describe('会话参数：数字 conv_id 与失败回执', () => {
   async function twoConvs() {
-    const mounted = await mount({ mode: 'all' });
+    const mounted = await mount({ mode: 'all', ownerId: '999' });
     const { driver, host } = mounted;
     driver.emitMessage({
       ...groupMsg({ id: 'g1', text: '甲群说话' }),
@@ -1678,6 +1711,7 @@ describe('会话参数：数字 conv_id 与失败回执', () => {
     });
     await Promise.resolve();
     settle(mounted.world, host);
+    mounted.world.onTurnEnded();
     return mounted;
   }
 

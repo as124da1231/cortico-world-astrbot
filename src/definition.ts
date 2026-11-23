@@ -15,6 +15,8 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
     new AstrbotWorld({
       cfg: ctx.cfg,
       timezone: ctx.timezone,
+      restart: () => ctx.restart(),
+      storeBridgeToken: (token) => ctx.persist({ token }),
       ownerToolSecret: {
         read: () => ctx.secret('ASTRBOT_OWNER_TOOL_TOKEN'),
         store: (value) => ctx.storeSecret('ASTRBOT_OWNER_TOOL_TOKEN', value),
@@ -65,6 +67,10 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
           zh: '桥转述的状态通知，例如 AstrBot 侧的 QQ 掉线。',
           en: 'A status notice relayed by the bridge, such as the QQ side going offline.',
         },
+      },
+      {
+        type: 'astrbot.read_result',
+        description: { zh: 'Coo 主动读取的 QQ 外部资料。', en: 'External QQ content explicitly fetched by Coo.' },
       },
     ],
   },

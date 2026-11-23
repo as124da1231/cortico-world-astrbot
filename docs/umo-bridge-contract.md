@@ -1,6 +1,10 @@
 # Cortico ↔ AstrBot：UMO 与两端配置契约
 
-状态：v1（已采用，单通道）
+状态：v2（单通道，双端同步模式与工具授权）
+
+握手后，`ready` 带 `mode` 和 `modeRevision`。World 发 `mode-accept` 并收到 `mode-status` 后，桥才接管 QQ。确认切换时发 `mode-change`，带已知 `modeRevision`、新的 `mode` 和 `rid`；收到 `mode-prepare` 后按同样方式接受新代次。不同步时由 AstrBot 原有流程处理。
+
+`send` 和 `tool` 都带 `modeRevision`。QQ 请求带完整 `umo` 和触发消息的 `turn`；完整模式的桌面主人带单独验证的 `actor`，并显式指定目标。桥重连或切换模式会清除旧轮次授权。
 
 适用范围：`cortico-world-astrbot`（World）与 `astrbot_plugin_cortico_bridge`（插件）
 
@@ -212,9 +216,9 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 ### 6.1 基本帧
 
 ```json
-{ "t": "hello", "v": 1, "token": "…", "name": "Cortico", "capabilities": { "images": true } }
+{ "t": "hello", "v": 2, "token": "…", "name": "Cortico", "capabilities": { "images": true } }
 
-{ "t": "ready", "v": 1, "channel": "qq",
+{ "t": "ready", "v": 2, "channel": "qq", "mode": "full", "modeRevision": "当前代次",
   "self": { "id": "…", "name": "…" },
   "admins": ["42"],
   "tts": { "ready": true, "provider": "edge_tts" },
@@ -224,7 +228,7 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
   ] }
 ```
 
-- 第一帧必须是 `hello`；`v` 必须是 `1`。版本不对 → close `4004`，token 不对 → `4003`，第一帧不是 hello → `4002`。URL 带 token → `4401`，带 Origin → `4403`。
+- 第一帧必须是 `hello`，`v` 必须是 `2`。版本不对 → close `4004`，token 不对 → `4003`，第一帧不是 hello → `4002`。URL 带 token → `4401`，带 Origin → `4403`。
 - token 也可放在 `Authorization: Bearer …`；头和帧都出现时必须一致。
 - `ready` 之前的连接不算就绪。`admins` 是 AstrBot 管理员名单，`tts` 是语音能力（旧版是布尔值，World 两种都认）。
 - `conversations`（1.3.6 起）是桥记得的最近会话，最多 20 条，按 `age_sec` 升序；World 用它支持非 QQ 轮次的主动发送。要发到没列出的会话，先在目标会话说一句。
@@ -399,6 +403,9 @@ type Conv = {
 
 | World | 插件 | 行为 |
 |---|---|---|
+| 1.3.9 | 1.3.9 | 协议 v2，模式同步后接管。安全模式要求宿主提供独立轮次接口 |
+| 1.3.9 | 1.3.8 或更早 | 协议版本不匹配，桥接不可用 |
+| 1.3.8 或更早 | 1.3.9 | 协议版本不匹配，桥接不可用 |
 | 1.3.6 | 1.3.6 | UMO 单通道，完整功能；`at` / `conversations` 需要两端都 ≥ 1.3.6 |
 | 1.3.5 | 1.3.5 | UMO 主键；发送帧已要求 UMO |
 | 1.3.6 | 1.3.4 及更早 | 入站可能无 UMO：能显示，不能回发；`at` 会被旧桥忽略 |

@@ -99,12 +99,6 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         description:
           'AstrBot 桥上监听的 WebSocket 地址，例如 ws://192.0.2.10:17999。必须是 World 能访问的地址。',
       },
-      'worlds.astrbot.token': {
-        type: 'string',
-        title: '桥 token',
-        'x-hot': false,
-        description: '必须和 AstrBot 插件里的 token 完全一致；留空表示不校验。',
-      },
       'worlds.astrbot.includeTime': {
         type: 'boolean',
         title: '带时间前缀',

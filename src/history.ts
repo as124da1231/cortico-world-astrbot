@@ -36,7 +36,7 @@ export function convOfEvent(e: EventEnvelope): Conv | undefined {
 function inConv(e: EventEnvelope, conv: Conv): boolean {
   const c = convOfEvent(e);
   if (!c) return false;
-  if (c.umo && conv.umo) return c.umo === conv.umo;
+  if (conv.umo) return c.umo === conv.umo;
   return c.kind === conv.kind && c.id === conv.id;
 }
 

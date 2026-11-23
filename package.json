@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-astrbot",
-  "version": "1.3.8",
+  "version": "1.3.9",
   "type": "module",
   "description": "通过 AstrBot 把 QQ 群聊和私聊接到 Coo，支持引用、合并转发、图片、语音和经授权的 AstrBot 工具。交流 QQ 群 1136066256。",
   "license": "MIT",
@@ -42,12 +42,12 @@
     "locales": {
       "zh": {
         "displayName": "AstrBot · QQ",
-        "description": "让 Coo 接入你在 AstrBot 上的 QQ 群聊和私聊。AstrBot 管理账号、接管范围和插件，Coo 沿用自己的对话和记忆给出回复。\n\n支持查看引用和合并转发、点名唤醒、图片、语音转写和语音回复。管理员可逐项授权 AstrBot 工具。Coo 本地对话使用主人权限调用工具时，需要单独配置主人 QQ 和工具令牌。\n\n使用前请在 AstrBot 4.29.1 或更新版本安装配套桥插件。交流 QQ 群 1136066256。"
+        "description": "让 Coo 接入 AstrBot 上的 QQ 群聊和私聊。AstrBot 管理账号、接管范围和插件，Coo 使用当前模型回复。支持引用、合并转发、图片、按需读取 QQ 语音原文件及语音回复。\n\n完整模式使用 Coo 主对话，QQ 回复可能引用控制台里的内容。安全模式隔离 QQ 会话，需要宿主提供独立轮次接口。\n\n请在 AstrBot 4.29.1 或更新版本安装同版本的配套桥插件。主人权限调用工具需要另行授权。交流 QQ 群 1136066256。"
       }
     },
     "describe": "describe.json",
-    "webUiClient": "dist/webui.js",
-    "webUiStyle": "dist/webui.css"
+    "webUiClient": "dist/webui-09517eced7cc.js",
+    "webUiStyle": "dist/webui-3ca350a42266.css"
   },
   "files": [
     "src",

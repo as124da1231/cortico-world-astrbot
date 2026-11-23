@@ -46,17 +46,73 @@ function toggleRow(
   return wrap;
 }
 
+function modeCard(
+  ctx: WebUiPanelContext,
+  st: ConnectionState,
+  reload: () => void,
+  isDirty: () => boolean,
+): HTMLElement {
+  const { ui } = ctx;
+  const card = ui.h('div', 'astrbot-group');
+  const active = st.mode === 'safe' ? '安全模式' : '完整模式';
+  const next = st.mode === 'safe' ? 'full' : 'safe';
+  const nextName = next === 'safe' ? '安全模式' : '完整模式';
+  const label = ui.pill(st.mode ? active : '等待 AstrBot 同步模式');
+  const feedback = ui.h('div', 'astrbot-note');
+  feedback.setAttribute('role', 'status');
+  const button = ui.button(`切换为${nextName}`, { size: 'sm' });
+  button.disabled = st.switching || !st.modeKnown || (next === 'safe' && (!st.modeSynced || !st.safeAvailable));
+  if (!st.safeAvailable && st.mode === 'full') feedback.textContent = '当前 Coo 宿主尚未提供独立上下文，安全模式暂不可用。';
+  if (!st.safeAvailable && st.mode === 'safe' && st.modeKnown) {
+    feedback.textContent = '当前 Coo 宿主无法运行安全模式。可确认切换为完整模式，恢复 QQ 接管。';
+  }
+  button.addEventListener('click', async () => {
+    if (isDirty()) {
+      feedback.textContent = '请先保存当前页的连接设置。';
+      return;
+    }
+    const confirmed = await ui.confirm({
+      title: `切换为${nextName}`,
+      body: next === 'full'
+        ? '接入的 QQ 群和私聊将使用 Coo 的主对话，Coo 可能在 QQ 回复中提到控制台里聊过的内容。已授权的插件工具和主动发送也会启用。Coo 和 AstrBot 同步后生效。'
+        : 'Coo 仍用当前人格和模型答复，但 QQ 使用独立上下文。通用插件、控制台接续和桌面主动发送将暂停。',
+    });
+    if (!confirmed || isDirty()) return;
+    button.disabled = true;
+    feedback.textContent = '正在同步 Coo 和 AstrBot…';
+    try {
+      await ctx.invoke('switch-mode', [next, true]);
+      reload();
+    } catch (error) {
+      feedback.textContent = error instanceof Error ? error.message : String(error);
+      button.disabled = false;
+    }
+  }, { signal: ctx.signal });
+  const controls = ui.h('div', 'astrbot-inline');
+  controls.append(label, button);
+  card.append(ui.h('div', 'astrbot-glabel', '桥接模式'), controls, feedback);
+  return card;
+}
+
+function ownerStatus(st: ConnectionState): string {
+  if (!st.ownerToolsEnabled) return '已关闭';
+  if (!st.ownerId || !st.ownerToolTokenSet) return '待填写 QQ 号或令牌';
+  if (!st.tokenSet) return '需要桥接令牌';
+  if (!st.connected) return '等待连接验证';
+  if (!st.admins.includes(st.ownerId)) return '该 QQ 未列入 AstrBot 管理员';
+  return st.ownerTools ? '已授权' : 'AstrBot 未授权';
+}
+
 function settingsCard(
   ctx: WebUiPanelContext,
   st: ConnectionState,
   reload: () => void,
-  setDirty: (value: boolean) => void,
+  dirty: { value: boolean },
 ): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
-    title: '连接',
-    en: 'AstrBot ⇄ Coo',
-    desc: '只改 Coo 这一端。AstrBot 的群聊、私聊、工具和语音仍在插件页。',
+    title: '连接 AstrBot',
+    desc: '填写 AstrBot 桥的地址和访问令牌，再保存连接设置。',
   });
 
   let wsUrl = st.wsUrl;
@@ -71,7 +127,7 @@ function settingsCard(
   let saving = false;
 
   const mark = (): void => {
-    setDirty(true);
+    dirty.value = true;
     bar.dirty();
   };
 
@@ -87,12 +143,14 @@ function settingsCard(
 
   const tokenInput = ui.input({
     type: 'password',
-    placeholder: st.tokenSet ? '已设置；留空保持不变' : '留空表示不校验',
+    placeholder: st.tokenSet ? '留空保留已保存的令牌' : '粘贴 AstrBot 的访问 token',
     onInput: (value) => {
       token = value;
       mark();
     },
   });
+  tokenInput.autocomplete = 'new-password';
+  tokenInput.spellcheck = false;
 
   const ownerInput = ui.input({
     value: ownerId,
@@ -103,15 +161,18 @@ function settingsCard(
       mark();
     },
   });
+  ownerInput.inputMode = 'numeric';
 
   const ownerTokenInput = ui.input({
     type: 'password',
-    placeholder: st.ownerToolTokenSet ? '已设置；留空保持不变' : '填 AstrBot 的独立工具令牌',
+    placeholder: st.ownerToolTokenSet ? '留空保留已保存的令牌' : '粘贴 AstrBot 的主人工具令牌',
     onInput: (value) => {
       ownerToolToken = value;
       mark();
     },
   });
+  ownerTokenInput.autocomplete = 'new-password';
+  ownerTokenInput.spellcheck = false;
   const ownerToolsEnabled = ui.checkbox('启用主人工具授权', {
     checked: st.ownerToolsEnabled,
     onChange: mark,
@@ -157,31 +218,51 @@ function settingsCard(
 
   // token 语义是「留空＝保持」，所以清空输入框并不等于删掉已存值；
   // 想真正删掉必须显式点清除（X-005）。
-  const tokenHint = ui.h('div', 'astrbot-note');
-  const clearBtn = ui.button('清除已存 token', {
+  const tokenStatus = ui.h('span', 'astrbot-note', st.tokenSet ? '已保存' : '未设置');
+  tokenStatus.setAttribute('role', 'status');
+  const clearBtn = ui.button('清除已保存的令牌', {
     variant: 'plain',
     size: 'sm',
     onClick: () => {
       if (clearBtn.disabled) return;
       clearToken = !clearToken;
-      if (clearToken) tokenInput.value = '';
+      if (clearToken) {
+        token = '';
+        tokenInput.value = '';
+      }
       syncToken();
       mark();
     },
   });
-  const tokenRow = ui.h('div', 'astrbot-tokenrow');
-  tokenRow.append(tokenInput, clearBtn);
+  const tokenActions = ui.h('div', 'astrbot-inline astrbot-token-actions');
+  tokenActions.append(tokenStatus, clearBtn);
+  clearBtn.hidden = !st.tokenSet;
 
   const syncToken = (): void => {
     tokenInput.disabled = saving || clearToken;
     clearBtn.disabled = saving || !(st.tokenSet || clearToken);
-    clearBtn.textContent = clearToken ? '取消清除' : '清除已存 token';
-    tokenHint.textContent = clearToken
-      ? '保存后会清空桥 token；AstrBot 插件那边也要清空或改成不校验，否则两边对不上。'
-      : st.tokenSet
-        ? '已存 token。留空＝保持不变；要删掉请点「清除已存 token」。'
-        : '两边都没设 token 时不校验；跨机部署请设置同一个 token。';
+    clearBtn.textContent = clearToken ? '取消清除' : '清除已保存的令牌';
+    tokenStatus.textContent = clearToken
+      ? '保存时将清除令牌，跨机连接会断开'
+      : st.tokenSet ? '已保存' : '未设置';
   };
+
+  const retry = ui.button('重新连接', { size: 'sm', onClick: async () => {
+    if (dirty.value) {
+      ui.toast('请先保存当前页的连接设置。');
+      return;
+    }
+    setSaving(true);
+    try {
+      await ctx.invoke('reconnect');
+      reload();
+    } catch {
+      ui.toast('暂时无法重连 AstrBot，请等当前 QQ 处理结束后重试。', 'bad');
+    } finally {
+      setSaving(false);
+    }
+  } });
+  retry.hidden = !st.enabled;
 
   const formControls: Array<HTMLInputElement | HTMLButtonElement> = [
     urlInput,
@@ -202,12 +283,13 @@ function settingsCard(
       el.disabled = busy;
     }
     syncToken();
+    retry.disabled = busy;
   };
   syncToken();
 
   const bar = saveBar(
     ctx,
-    '保存连接设置',
+    st.enabled ? '保存并应用' : '保存连接设置',
     async () => {
       const url = wsUrl.trim();
       if (url && !/^wss?:\/\/.+/i.test(url)) {
@@ -241,47 +323,47 @@ function settingsCard(
         'worlds.astrbot.reconnectBaseMs': Math.max(200, Math.min(baseMs, 60_000)),
         'worlds.astrbot.reconnectMaxMs': Math.max(1000, Math.min(maxMs, 600_000)),
       };
-      if (clearToken) values['worlds.astrbot.token'] = '';
-      else if (token.trim()) values['worlds.astrbot.token'] = token.trim();
-      if (ownerCredential) await ctx.invoke('save-owner-token', [ownerCredential]);
+      const bridgeCredential = token.trim();
+      const bridgeCredentialChanged = clearToken || !!bridgeCredential;
+      const needsReconnect = bridgeCredentialChanged || !!ownerCredential || url !== st.wsUrl
+        || ownerToolsEnabled.input.checked !== st.ownerToolsEnabled
+        || values['worlds.astrbot.reconnectBaseMs'] !== st.reconnectBaseMs
+        || values['worlds.astrbot.reconnectMaxMs'] !== st.reconnectMaxMs;
       await ctx.setConfig(GROUP, values);
-      clearToken = false;
-      token = '';
-      setDirty(false);
-      bar.reset();
+      if (bridgeCredentialChanged) await ctx.invoke('save-bridge-token', [bridgeCredential]);
+      if (ownerCredential) await ctx.invoke('save-owner-token', [ownerCredential]);
+      dirty.value = false;
+      let result = '连接设置已保存';
+      if (st.enabled && needsReconnect) {
+        try {
+          await ctx.invoke('reconnect');
+          result = '设置已保存，已发起重连';
+        } catch {
+          result = '设置已保存，请在当前页重试重新连接';
+        }
+      }
       reload();
-      return '连接设置已保存';
+      return result;
     },
     { onSaving: setSaving },
   );
 
   const bridge = ui.h('div', 'astrbot-group');
   bridge.append(
-    ui.h('div', 'astrbot-glabel', '接入'),
-    // 启停是 World 的生命周期，不在 worlds.astrbot 的 schema 里；面板不再假装能改。
-    ui.h(
-      'div',
-      'astrbot-gnote',
-      '启停不在这个面板：到 Coo 的 World 页打开或关闭「AstrBot · QQ」。这里保存不会改变启停状态。',
-    ),
     ui.field('桥地址', urlInput),
-    ui.field('桥 token', tokenRow),
-    tokenHint,
+    ui.field('桥接令牌（Token）', tokenInput),
+    tokenActions,
+    ui.h('div', 'astrbot-note', '在 AstrBot 桥插件的「概览」→「谁能连进来」复制访问 token。跨机连接必填。'),
   );
 
   const tools = ui.h('div', 'astrbot-group');
   tools.append(
-    ui.h('div', 'astrbot-glabel', '工具身份'),
+    ui.h('div', 'astrbot-glabel', '桌面主人工具授权'),
+    ui.pill(ownerStatus(st), st.ownerTools && st.admins.includes(st.ownerId) ? 'on' : 'plain'),
+    ui.h('div', 'astrbot-note', '在 AstrBot 桥配置中填入主人 QQ 和独立的主人工具令牌，再在这里填同一组值。跨机授权使用 wss://。'),
     ui.field('主人 QQ', ownerInput),
     ui.field('主人工具令牌', ownerTokenInput),
     ownerToolsEnabled.el,
-    ui.h(
-      'div',
-      'astrbot-note',
-      st.ownerTools
-        ? '桥已授予主人工具权限。主人 QQ 须与 AstrBot 配置中的账号一致。'
-        : '桥尚未授予主人工具权限。在 AstrBot 设置主人 QQ 和独立工具令牌，在这里填同一组值。远程地址使用 wss://。',
-    ),
   );
 
   const behavior = ui.h('div', 'astrbot-group');
@@ -295,19 +377,16 @@ function settingsCard(
     ui.field('重连初始间隔（毫秒）', baseInput),
     ui.field('重连上限（毫秒）', maxInput),
   );
-  behavior.append(ui.h('div', 'astrbot-glabel', '行为'), toggles, duo);
+  behavior.append(toggles, duo);
+  const advanced = ui.h('details', 'astrbot-advanced');
+  advanced.append(ui.h('summary', '', '高级设置'), behavior);
 
   const submit = ui.h('div', 'astrbot-submit');
-  submit.append(
-    ui.h(
-      'div',
-      'astrbot-note',
-      '地址、令牌和重连参数保存后，点页面底部的「重启 World」生效。',
-    ),
-    bar.el,
-  );
+  submit.append(retry, bar.el);
 
-  card.body.append(head(ctx, st), bridge, tools, behavior, submit);
+  card.body.append(head(ctx, st), bridge, modeCard(ctx, st, reload, () => dirty.value || saving));
+  if (st.mode === 'full') card.body.append(tools);
+  card.body.append(advanced, submit);
   return card.el;
 }
 
@@ -315,15 +394,13 @@ function runtimeCard(ctx: WebUiPanelContext, st: ConnectionState): HTMLElement {
   const { ui } = ctx;
   const card = ui.sheet({
     title: '运行时',
-    en: 'world',
-    desc: 'Coo 这一端看到的事实，只读。',
   });
   const self = st.self?.name || st.self?.id || '—';
   card.body.appendChild(
     ui.kv([
       { k: '自报身份', v: self },
-      { k: 'QQ 上的主人', v: st.owners ? `${st.owners} 人` : '未配置' },
-      { k: '语音', v: st.tts.ready ? st.tts.provider || '可用' : '不可用' },
+      { k: 'AstrBot 管理员', v: st.owners ? `${st.owners} 人` : '—' },
+      { k: '语音回复（TTS）', v: st.tts.ready ? st.tts.provider || '可用' : '不可用' },
       { k: '可用工具', v: `${st.tools} 个` },
       { k: '见过的会话', v: `${st.conversations} 个` },
     ]),
@@ -340,8 +417,8 @@ function runtimeCard(ctx: WebUiPanelContext, st: ConnectionState): HTMLElement {
 
 export const connectionPanel: WebUiPanel = {
   mount(ctx) {
-    let dirty = false;
-    ctx.guardLeave(() => (dirty ? '连接设置还没保存，确定离开？' : null));
+    const dirty = { value: false };
+    ctx.guardLeave(() => (dirty.value ? '连接设置还没保存，确定离开？' : null));
     autoload<ConnectionState>(ctx, {
       loading: '正在读取连接状态…',
       failed: '读取连接状态失败',
@@ -350,9 +427,7 @@ export const connectionPanel: WebUiPanel = {
         const { ui } = ctx;
         const layout = ui.h('div', 'astrbot-layout');
         const main = ui.h('div', 'astrbot-main');
-        main.appendChild(settingsCard(ctx, st, reload, (value) => {
-          dirty = value;
-        }));
+        main.appendChild(settingsCard(ctx, st, reload, dirty));
         layout.append(main, runtimeCard(ctx, st));
         return [layout];
       },
