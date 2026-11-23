@@ -6,7 +6,7 @@ QQ + AstrBot + Coo：不用换 QQ，不用搬 AstrBot 插件，只把「说话�
 
 QQ 里的人继续在群和私聊里说话；AstrBot 继续管账号、插件、工具和语音；Coo 带着自己的性格和记忆进来回复。
 
-群聊、私聊、@ 或全部消息、图片、语音转写、TTS、撤回和戳一戳都已接上。AstrBot 里装好的工具——点歌、查歌词、天气、直播弹幕——Coo 在 QQ 里直接调用；Coo 对话里可以使用 AstrBot 已授权的主人身份和独立工具令牌调用。
+在 QQ 私聊可以接着 Coo 桌面聊。完整模式可开放指定 QQ 群和私聊，支持点名唤醒或接收群消息、回复时 @ 成员、调用已授权的 AstrBot 工具，以及从桌面以机器人身份给已授权会话发消息。两种模式都沿用当前 Coo 的人格、模型和主会话。
 
 **当前版本 1.3.9**
 
@@ -49,7 +49,7 @@ Cortico Core（Persona、Memory、事件流）
 | QQ 侧 | [`astrbot_plugin_cortico_bridge`](https://github.com/as124da1231/astrbot_plugin_cortico_bridge) | AstrBot 的插件目录 |
 | Cortico 侧 | `cortico-world-astrbot`（本包） | Cortico 的 `extensions/` |
 
-两个包按同一版协议 v2 通信。先装 AstrBot 插件、拿到它的地址和 token，再来填本包的 `wsUrl` / `token`。
+两个包按同一版协议 v3 通信。QQ 账号和 OneBot 等平台连接照常由 AstrBot 管理。以下步骤从 AstrBot 已能接收 QQ 消息开始。
 
 QQ 账号走的是 OneBot 这类非官方协议，账号有被限制的风险——这个风险来自 QQ 接入方式本身，与本包无关，装之前请自行判断。
 
@@ -68,17 +68,31 @@ QQ 账号走的是 OneBot 这类非官方协议，账号有被限制的风险—
 corepack pnpm add cortico-world-astrbot
 ```
 
-装完到 **Coo → World → AstrBot · QQ → 连接**，填写 AstrBot 桥地址和「桥接令牌（Token）」，保存并应用。在 Coo 的 World 页启用扩展。跨机连接使用 `wss://`，令牌在 AstrBot 桥插件的「概览」复制。
+### 同机基础聊天，两步配置
+
+1. 启用 AstrBot 的桥插件和 Coo 的 **World → AstrBot · QQ**。两端默认使用 `ws://127.0.0.1:17999`，直接同机回环可留空桥接令牌。
+2. 在 AstrBot 桥插件的「概览」绑定主人 QQ 和对应的 QQ 平台实例。在 Coo 的「连接」确认模式已同步后，主人给机器人发一条私聊。
+
+同机 Docker 需使桥端口从 Coo 所在的宿主回环可达。容器内非回环监听仍需设置一枚桥接令牌，并在 Coo「连接」中填写。
+
+### 跨机追加两步配置
+
+1. 选择连接地址。直连填 `ws://服务器IP:17999`，AstrBot 桥需监听 Coo 可达的地址。使用 TLS 时填 `wss://` 代理地址，可填域名或公网 IP，证书须覆盖所填地址并受 Coo 信任。`ws://` 本身是明文，已有加密隧道也可以承载 WS。
+2. 在 AstrBot 插件「概览」生成一枚桥接令牌，在 Coo **World → AstrBot · QQ → 连接**填入所选地址和该令牌，选择「保存并应用」。
+
+### 开放完整模式和额外能力
+
+1. 在 AstrBot 桥配置允许的群和私聊，再在 Coo「连接」确认申请完整模式，由 AstrBot 管理员在「概览」确认。两端同步后，已开放的 QQ 会话可以使用 Coo 主会话，回复可能提到 Coo 桌面对话内容。
+2. 按需在 AstrBot 选择工具白名单，分别授权桌面工具及机器人主动发送的目标。桌面权限通过同一枚桥接令牌接入。同机用户要启用这些桌面能力，也在两端配置这枚令牌。
+3. 需要 QQ 语音转写、语音回复或视觉转述时，在 AstrBot 选好相应的服务。图片、语音原件和附件的实际可读范围取决于 QQ 适配器、附件是否仍可下载与 Coo 当前模型的输入能力。
 
 ### 升级至 1.3.9
 
-1. 将 AstrBot 桥和 Coo World 一起升到 1.3.9。桥要求 **AstrBot ≥ 4.29.1**。两端交换协议 v2，和 1.3.8 及更早版本混装时会停止接管。原有模型、群名单、会话和连接配置可继续使用。
+1. 将 AstrBot 桥和 Coo World 一起升到 1.3.9。桥要求 **AstrBot ≥ 4.29.1**。旧协议对端会被拒绝，期间 QQ 走 AstrBot 原处理流程。原有模型、群名单、会话和有效连接配置可以继续使用，包含已有的 `ws://` 地址。
 2. 在 AstrBot 插件设置中复核已授权工具。`tools_risks` 中明确标为 `read` 或 `write` 的工具才会被 `*` 纳入。未分类的工具需要单独点名和管理员授权。
-3. 如需在 Coo 对话里用主人身份调用工具，在 AstrBot 设置 `owner_tool_qq` 和 `owner_tool_token`，再到 Coo「连接」填写相同的账号和工具令牌。工具令牌独立于桥 token。跨机工具授权使用 `wss://`。
+3. 在 AstrBot「概览」复核主人绑定、桌面工具权限和主动发送目标。Coo 连接侧只使用桥接令牌。
 
-「连接」页可以确认切换模式，两端同步后生效。完整模式使用 Coo 主对话，QQ 回复可能引用控制台里的对话内容，也能调用已授权的工具。安全模式按 QQ 会话隔离上下文，只开放当前 QQ 会话的聊天工具。两种模式都用 Coo 当前的模型。
-
-**宿主兼容性：** 原版 Coopanion 0.2.23 支持完整模式。安全模式需要额外提供独立轮次接口的宿主，扩展包安装后可在「连接」页检查是否可用。如果 AstrBot 此前保存为安全模式，换回原版 Coo 后可以在「连接」页确认切换为完整模式，再恢复 QQ 接管。
+「连接」页可以确认切换模式，两端同步后生效。安全模式只接收主人 QQ 私聊，允许回复、按需查询私聊历史和读取可用的引用、转发、图片与语音原件。完整模式开放 AstrBot 授权的其他会话与工具。两种模式都通过原版 Coo 的主会话接口工作。
 
 ## 它做什么
 
@@ -86,8 +100,8 @@ corepack pnpm add cortico-world-astrbot
   `【QQ群 测试群 18:52】#消息号 昵称(QQ:123)：正文`、`【QQ私聊 18:52】…`。
   图片取不到时写成 `[图片|没取到：原因]`，不让模型猜。
 - 提供 `astrbot_send_message`，让 bot 能把话（文字、图片或语音）发回群里；`voice: true` 会请桥用 TTS 合成，桥没开或失败时自动退回文字。
-- QQ 轮次可以省略目标，隐式回触发会话；**非 QQ 轮次**只有在「连接」填了主人 QQ（且该号是 AstrBot 管理员）、并用 `conv_id` / `reply_to` 指定已知会话时才允许主动发送。缺任何一条都会被拒绝并说明原因；显式目标必须是桥见过、带 UMO 的会话。
-- 工具也是两条身份路径：QQ 轮次用「触发这一轮的那条消息」的发言者身份，普通群友的管理员工具会被拒绝；Coo 对话轮次须在「连接」填写 AstrBot 授权的主人 QQ 和独立工具令牌。远程工具授权通过 wss:// 连接。超过 2 分钟的旧 QQ 轮次不会借主人身份。失败时如实显示中文原因，不假装成功。
+- QQ 轮次可以省略目标，回到触发会话。桌面主动发送只在完整模式开放，且须用 `conv_id` 或 `reply_to` 指定 AstrBot 已授权、桥已经见过的目标会话。
+- QQ 轮次用实际发言者的身份执行 AstrBot 工具。桌面轮次由 AstrBot 核对绑定的主人 QQ、管理员资格与工具授权。过期的 QQ 轮次不会借用桌面身份。失败时工具回执会给出中文原因。
 - 纯 QQ 通知（撤回、戳一戳、入退群）只作为上下文，不建立 QQ 轮次；`[QQ 人消息 + 工具清单通知]` 这种同批也不算 mixed，仍然可以正常回复。`turnMsgId` 为空（只有通知）时拒绝发消息和调工具。
 - 提供 `astrbot_status`，查连接状态、这一轮是不是 QQ 轮次、语音是否可用、见过的会话。
 - 提供 `astrbot_read_history`，按关键词或发送者回查自己见过的 QQ 消息。
@@ -112,7 +126,7 @@ corepack pnpm add cortico-world-astrbot
 
 1.3.6 起，桌宠、Coo 对话等非 QQ 轮次也可以主动发消息，但要同时满足：
 
-1. 「连接」页填了主人 QQ，且该号在 AstrBot 的 `admins_id` 里；
+1. 完整模式已生效，AstrBot 插件「概览」已开放桌面主动发送并配置目标，两端使用桥接令牌完成鉴权；
 2. 调用 `astrbot_send_message` 时用 `conv_id`（群号 / QQ 号，可配 `conv_kind`）或 `reply_to` 指定目标；
 3. 目标必须是桥已经见过的会话。桥在 `ready` 里最多报 20 条最近会话；要发到没列出的会话，先在那个会话说一句，让桥记下它。
 
@@ -137,43 +151,40 @@ QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过�
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `false` | 挂载开关。**启停只在 Coo 的 World 页**，面板里没有这个开关 |
-| `wsUrl` | 空 | 桥的地址，如 `ws://127.0.0.1:17999`。空串表示还没配置 |
-| `token` | 空 | 与桥一致的校验 token；两边都留空表示不校验 |
+| `wsUrl` | `ws://127.0.0.1:17999` | 支持 `ws://` 和 `wss://`。显式空地址暂停连接 |
+| `token` | 空 | 与桥一致的访问令牌。同机回环的基础聊天可留空 |
 | `includeTime` | `true` | 投递给 Coo 的消息行首带 `HH:MM` |
 | `channelHint` | `true` | 在需要回复的 QQ 消息（@、带图、私聊）后加一行「用 astrbot_send_message 回」的提醒 |
 | `reconnectBaseMs` | `1000` | 断线后第一次重连等待；之后翻倍 |
 | `reconnectMaxMs` | `30000` | 重连等待上限 |
-| `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具、以及非 QQ 轮次主动发 QQ 时借用的管理员 QQ；必须纯数字、20 位以内，且在该 AstrBot 的 `admins_id` 里。留空表示不借身份、也不允许主动发送 |
-| `ownerToolsEnabled` | `true` | 使用连接页存入部署密钥的独立工具令牌。停用后重启 World 释放连接授权。 |
 | `allowAtAll` | `false` | 允许 `at: ["all"]` @全体。面板暂无开关，改部署的 `config.json` 里的 `worlds.astrbot.allowAtAll` |
 
 群范围、`mention` / `all` 消息范围、称呼和发送频率都由 AstrBot 插件统一控制，World 不再重复配置。
 
-在 Coo「连接」页修改桥地址、令牌或重连参数后，点「保存并应用」即可让已启用的 World 重新连接。桥接令牌保存在部署配置里，通用配置页只提供非敏感设置。`includeTime`、`channelHint`、`ownerId` 保存后即时生效。`allowAtAll` 可在通用配置页或部署的 `config.json` 中修改。
+在 Coo「连接」页修改桥地址、令牌或重连参数后，点「保存并应用」即可让已启用的 World 重新连接。通用配置页只提供非敏感设置。`includeTime`、`channelHint` 保存后即时生效。`allowAtAll` 可在通用配置页或部署的 `config.json` 中修改。
 
 「连接」页的几条行为：
 
 - 「桥接令牌（Token）」留空会保留原值。要删除，点「清除已保存的令牌」再保存。跨机连接清除后会断开。
 - 保存期间表单会锁住，避免等待期的修改被刷新覆盖；失败时保留输入，可以直接重试。
-- 主人 QQ 只接受数字、最长 20 位；不在 AstrBot 管理员名单里时，工具调用会失败并说明原因。
 
 ## 桥的协议
 
 一条 WS 连接，JSON 帧。客户端连上后先自报身份，并声明自己的能力：
 
 ```json
-{ "t": "hello", "v": 2, "token": "…", "name": "Cortico",
+{ "t": "hello", "v": 3, "name": "Cortico",
   "capabilities": { "images": true } }
 ```
 
-- `v` 必须是 `2`；版本不对桥会以 `4004` 关闭，token 不对是 `4003`，第一帧不是 hello 是 `4002`。
-- token 也可以放在 `Authorization: Bearer …` 头里；两种都出现时必须一致。
+- `v` 必须是 `3`。版本不对桥会以 `4004` 关闭，令牌不对是 `4003`，第一帧不是 hello 是 `4002`。
+- 令牌只通过 WebSocket Upgrade 的 `Authorization: Bearer …` 请求头发送。
 - `capabilities.images` 表示本端模型能直接读图；为真时桥才附原图，否则自己转成文字。这个值由 Cortico 侧按当前端点的多模态能力算出来，只在**每次重连握手时**刷新——中途改了端点设置要等重连（或重启进程）才生效。
 
 桥在握手后、以及语音/工具配置变化时推 `ready`：
 
 ```json
-{ "t": "ready", "v": 2, "channel": "qq", "mode": "full", "modeRevision": "当前代次",
+{ "t": "ready", "v": 3, "channel": "qq", "mode": "full", "modeRevision": "当前代次",
   "self": { "id": "…", "name": "…" }, "admins": ["42"],
   "tts": { "ready": true, "provider": "edge_tts" },
   "conversations": [
@@ -253,14 +264,14 @@ QQ 轮次不受这些限制：不写目标就回触发这一轮的会话。过�
   "turn": "触发这一轮的消息id" }
 
 { "t": "tool", "rid": "t-2", "name": "get_weather", "args": { "city": "上海" },
-  "turn": "", "actor": { "kind": "owner", "id": "42" } }
+  "turn": "", "actor": { "kind": "desktop" } }
 
 { "t": "tool-ack", "rid": "t-1", "ok": true, "result": "晴，26℃" }
 { "t": "tool-ack", "rid": "t-2", "ok": false, "error": "tool_failed",
   "note": "工具执行失败，详情见插件日志" }
 ```
 
-`turn` 与 `actor` 只能二选一：QQ 轮次用消息 id，Coo 对话轮次用 owner actor（`id` 必须在 `admins_id` 里）。两个都没有、同时都有、或 actor 形状不对，桥会在执行前直接拒绝。
+`turn` 与 `actor` 二选一。QQ 轮次用触发消息 ID，桌面轮次声明 `actor: { "kind": "desktop" }`，由 AstrBot 确定已授权的主人身份及工具权限。
 
 发送错误码（`ack.error`）：
 

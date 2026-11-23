@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { once } from 'node:events';
 import { createServer, type Server, type Socket } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
+import { bridgeAddressError, bridgeCredentialError, usesRemotePlaintextBridge } from '../src/config.ts';
 import { AstrbotBridgeDriver, AUTH_REJECT_MIN_BACKOFF_MS, parseMessage, parseUmo } from '../src/driver.ts';
 
 /** 只接受 TCP、永远不回 HTTP Upgrade 的对端：模拟半开握手。 */
@@ -27,6 +29,46 @@ describe('AstrbotBridgeDriver 握手', () => {
   afterEach(async () => {
     await cleanup?.();
     cleanup = undefined;
+  });
+
+  it.each([
+    ['ws://192.0.2.10:17999', true],
+    ['wss://192.0.2.10:17999', false],
+    ['wss://bridge.example.test/qq', false],
+  ] as const)('接受跨机地址 %s 并校验桥接令牌', (address, plaintext) => {
+    expect(bridgeAddressError(address)).toBeUndefined();
+    expect(bridgeCredentialError(address, '')).toContain('须填写桥接令牌');
+    expect(bridgeCredentialError(address, 'fixture-bridge-token')).toBeUndefined();
+    expect(usesRemotePlaintextBridge(address)).toBe(plaintext);
+  });
+
+  it('默认回环地址可以免令牌，桥地址不能包含凭据', () => {
+    expect(bridgeCredentialError('ws://127.0.0.1:17999', '')).toBeUndefined();
+    expect(usesRemotePlaintextBridge('ws://127.0.0.1:17999')).toBe(false);
+    expect(bridgeAddressError('ws://192.0.2.10:17999/?access_token=fixture')).toBeDefined();
+    expect(bridgeAddressError('wss://name:fixture@bridge.example.test/qq')).toBeDefined();
+  });
+
+  it('WS 握手的令牌只出现在 Upgrade 请求头', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await once(server, 'listening');
+    const { port } = server.address() as { port: number };
+    const driver = new AstrbotBridgeDriver({ wsUrl: `ws://127.0.0.1:${port}`, token: 'fixture-bridge-token' });
+    cleanup = async () => {
+      await driver.stop();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    };
+    const received = new Promise<{ authorization?: string; path?: string; frame: Record<string, unknown> }>(resolve => {
+      server.once('connection', (socket, request) => {
+        socket.once('message', raw => resolve({ authorization: request.headers.authorization, path: request.url, frame: JSON.parse(String(raw)) }));
+      });
+    });
+    await driver.start();
+    const handshake = await received;
+    expect(handshake.authorization).toBe('Bearer fixture-bridge-token');
+    expect(handshake.path).toBe('/');
+    expect(handshake.frame).toMatchObject({ t: 'hello', v: 3 });
+    expect(handshake.frame).not.toHaveProperty('token');
   });
 
   it('对端只接 TCP 不回 Upgrade 时，start 仍会在超时后返回', async () => {
@@ -91,7 +133,7 @@ describe('AstrbotBridgeDriver 握手', () => {
       await new Promise<void>(resolve => wss.close(() => resolve()));
     };
     const seen: string[] = [];
-    driver.onMessage(msg => seen.push(msg.id ?? ''));
+    driver.onMessage(msg => { seen.push(msg.id ?? ''); });
     let socket: import('ws').WebSocket;
     let switchRid = '';
     wss.on('connection', ws => {
@@ -99,7 +141,7 @@ describe('AstrbotBridgeDriver 握手', () => {
       ws.on('message', raw => {
         const packet = JSON.parse(String(raw));
         if (packet.t === 'hello') {
-          ws.send(JSON.stringify({ t: 'ready', v: 2, mode: 'full', modeRevision: 'old' }));
+          ws.send(JSON.stringify({ t: 'ready', v: 3, mode: 'full', modeRevision: 'old' }));
         } else if (packet.t === 'mode-accept' && packet.modeRevision === 'old') {
           ws.send(JSON.stringify({ t: 'mode-status', mode: 'full', modeRevision: 'old', active: true }));
         } else if (packet.t === 'mode-change') {

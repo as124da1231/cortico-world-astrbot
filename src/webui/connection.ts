@@ -8,6 +8,7 @@
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
 import { autoload, saveBar } from './shared.ts';
 import type { ConnectionState } from './types.ts';
+import { bridgeAddressError, bridgeCredentialError, LOCAL_BRIDGE_URL, usesRemotePlaintextBridge } from '../config.ts';
 
 const GROUP = 'world:astrbot';
 
@@ -61,11 +62,9 @@ function modeCard(
   const feedback = ui.h('div', 'astrbot-note');
   feedback.setAttribute('role', 'status');
   const button = ui.button(`切换为${nextName}`, { size: 'sm' });
-  button.disabled = st.switching || !st.modeKnown || (next === 'safe' && (!st.modeSynced || !st.safeAvailable));
-  if (!st.safeAvailable && st.mode === 'full') feedback.textContent = '当前 Coo 宿主尚未提供独立上下文，安全模式暂不可用。';
-  if (!st.safeAvailable && st.mode === 'safe' && st.modeKnown) {
-    feedback.textContent = '当前 Coo 宿主无法运行安全模式。可确认切换为完整模式，恢复 QQ 接管。';
-  }
+  button.disabled = st.switching || !st.modeSynced || st.modeApprovalPending;
+  if (st.modeApprovalPending) feedback.textContent = '待 AstrBot 管理员在桥插件的概览页确认开放范围。';
+  else if (st.mode === 'safe' && !st.ownerBound) feedback.textContent = '请在 AstrBot 桥插件的概览页指定主人 QQ 私聊。';
   button.addEventListener('click', async () => {
     if (isDirty()) {
       feedback.textContent = '请先保存当前页的连接设置。';
@@ -74,8 +73,8 @@ function modeCard(
     const confirmed = await ui.confirm({
       title: `切换为${nextName}`,
       body: next === 'full'
-        ? '接入的 QQ 群和私聊将使用 Coo 的主对话，Coo 可能在 QQ 回复中提到控制台里聊过的内容。已授权的插件工具和主动发送也会启用。Coo 和 AstrBot 同步后生效。'
-        : 'Coo 仍用当前人格和模型答复，但 QQ 使用独立上下文。通用插件、控制台接续和桌面主动发送将暂停。',
+        ? '接入的 QQ 群和私聊将使用 Coo 的主对话，Coo 可能在 QQ 回复中提到控制台里聊过的内容。已授权的插件工具和主动发送也会启用。请在 AstrBot 管理页确认开放范围后生效。'
+        : '仅放行指定主人的 QQ 私聊，继续使用 Coo 主对话。通用 AstrBot 工具和桌面主动发 QQ 将关闭。',
     });
     if (!confirmed || isDirty()) return;
     button.disabled = true;
@@ -94,15 +93,6 @@ function modeCard(
   return card;
 }
 
-function ownerStatus(st: ConnectionState): string {
-  if (!st.ownerToolsEnabled) return '已关闭';
-  if (!st.ownerId || !st.ownerToolTokenSet) return '待填写 QQ 号或令牌';
-  if (!st.tokenSet) return '需要桥接令牌';
-  if (!st.connected) return '等待连接验证';
-  if (!st.admins.includes(st.ownerId)) return '该 QQ 未列入 AstrBot 管理员';
-  return st.ownerTools ? '已授权' : 'AstrBot 未授权';
-}
-
 function settingsCard(
   ctx: WebUiPanelContext,
   st: ConnectionState,
@@ -112,14 +102,12 @@ function settingsCard(
   const { ui } = ctx;
   const card = ui.sheet({
     title: '连接 AstrBot',
-    desc: '填写 AstrBot 桥的地址和访问令牌，再保存连接设置。',
+    desc: '同机使用默认地址。跨机填写 ws:// 或 wss:// 地址和桥接令牌。',
   });
 
   let wsUrl = st.wsUrl;
   let token = '';
   let clearToken = false;
-  let ownerId = st.ownerId;
-  let ownerToolToken = '';
   let includeTime = st.includeTime;
   let channelHint = st.channelHint;
   let base = String(st.reconnectBaseMs);
@@ -131,12 +119,15 @@ function settingsCard(
     bar.dirty();
   };
 
+  const transportNote = ui.h('div', 'astrbot-note', '此跨机连接未启用 TLS，消息和令牌通过 WebSocket 明文传输。');
+  transportNote.hidden = !usesRemotePlaintextBridge(wsUrl.trim());
   const urlInput = ui.input({
     value: wsUrl,
-    placeholder: 'ws://127.0.0.1:17999',
+    placeholder: LOCAL_BRIDGE_URL,
     cls: 'mono',
     onInput: (value) => {
       wsUrl = value;
+      transportNote.hidden = !usesRemotePlaintextBridge(value.trim());
       mark();
     },
   });
@@ -151,32 +142,6 @@ function settingsCard(
   });
   tokenInput.autocomplete = 'new-password';
   tokenInput.spellcheck = false;
-
-  const ownerInput = ui.input({
-    value: ownerId,
-    placeholder: '例如 100000001',
-    cls: 'mono',
-    onInput: (value) => {
-      ownerId = value;
-      mark();
-    },
-  });
-  ownerInput.inputMode = 'numeric';
-
-  const ownerTokenInput = ui.input({
-    type: 'password',
-    placeholder: st.ownerToolTokenSet ? '留空保留已保存的令牌' : '粘贴 AstrBot 的主人工具令牌',
-    onInput: (value) => {
-      ownerToolToken = value;
-      mark();
-    },
-  });
-  ownerTokenInput.autocomplete = 'new-password';
-  ownerTokenInput.spellcheck = false;
-  const ownerToolsEnabled = ui.checkbox('启用主人工具授权', {
-    checked: st.ownerToolsEnabled,
-    onChange: mark,
-  });
 
   const timeBox = ui.checkbox('带时间前缀', {
     checked: includeTime,
@@ -267,9 +232,6 @@ function settingsCard(
   const formControls: Array<HTMLInputElement | HTMLButtonElement> = [
     urlInput,
     tokenInput,
-    ownerInput,
-    ownerTokenInput,
-    ownerToolsEnabled.input,
     baseInput,
     maxInput,
     timeBox.input,
@@ -292,20 +254,9 @@ function settingsCard(
     st.enabled ? '保存并应用' : '保存连接设置',
     async () => {
       const url = wsUrl.trim();
-      if (url && !/^wss?:\/\/.+/i.test(url)) {
-        throw new Error('桥地址要以 ws:// 或 wss:// 开头');
-      }
-      const owner = ownerId.trim();
-      if (owner && !/^\d*$/.test(owner)) {
-        throw new Error('主人 QQ 只能填数字');
-      }
-      if (owner.length > 20) {
-        throw new Error('主人 QQ 最长 20 位');
-      }
-      const ownerCredential = ownerToolToken.trim();
-      if (ownerCredential && !/^[\x21-\x7e]+$/.test(ownerCredential)) {
-        throw new Error('主人工具令牌请使用无空格的可打印 ASCII 字符');
-      }
+      const addressError = url ? bridgeAddressError(url) : undefined;
+      const error = addressError ?? bridgeCredentialError(url, token.trim(), st.tokenSet && !clearToken);
+      if (error) throw new Error(error);
       const baseMs = Number.parseInt(base, 10);
       const maxMs = Number.parseInt(max, 10);
       if (!Number.isFinite(baseMs) || !Number.isFinite(maxMs)) {
@@ -318,20 +269,16 @@ function settingsCard(
         'worlds.astrbot.wsUrl': url,
         'worlds.astrbot.includeTime': includeTime,
         'worlds.astrbot.channelHint': channelHint,
-        'worlds.astrbot.ownerId': owner,
-        'worlds.astrbot.ownerToolsEnabled': ownerToolsEnabled.input.checked,
         'worlds.astrbot.reconnectBaseMs': Math.max(200, Math.min(baseMs, 60_000)),
         'worlds.astrbot.reconnectMaxMs': Math.max(1000, Math.min(maxMs, 600_000)),
       };
       const bridgeCredential = token.trim();
       const bridgeCredentialChanged = clearToken || !!bridgeCredential;
-      const needsReconnect = bridgeCredentialChanged || !!ownerCredential || url !== st.wsUrl
-        || ownerToolsEnabled.input.checked !== st.ownerToolsEnabled
+      const needsReconnect = bridgeCredentialChanged || url !== st.wsUrl
         || values['worlds.astrbot.reconnectBaseMs'] !== st.reconnectBaseMs
         || values['worlds.astrbot.reconnectMaxMs'] !== st.reconnectMaxMs;
       await ctx.setConfig(GROUP, values);
       if (bridgeCredentialChanged) await ctx.invoke('save-bridge-token', [bridgeCredential]);
-      if (ownerCredential) await ctx.invoke('save-owner-token', [ownerCredential]);
       dirty.value = false;
       let result = '连接设置已保存';
       if (st.enabled && needsReconnect) {
@@ -351,19 +298,20 @@ function settingsCard(
   const bridge = ui.h('div', 'astrbot-group');
   bridge.append(
     ui.field('桥地址', urlInput),
+    transportNote,
     ui.field('桥接令牌（Token）', tokenInput),
     tokenActions,
     ui.h('div', 'astrbot-note', '在 AstrBot 桥插件的「概览」→「谁能连进来」复制访问 token。跨机连接必填。'),
   );
 
-  const tools = ui.h('div', 'astrbot-group');
-  tools.append(
-    ui.h('div', 'astrbot-glabel', '桌面主人工具授权'),
-    ui.pill(ownerStatus(st), st.ownerTools && st.admins.includes(st.ownerId) ? 'on' : 'plain'),
-    ui.h('div', 'astrbot-note', '在 AstrBot 桥配置中填入主人 QQ 和独立的主人工具令牌，再在这里填同一组值。跨机授权使用 wss://。'),
-    ui.field('主人 QQ', ownerInput),
-    ui.field('主人工具令牌', ownerTokenInput),
-    ownerToolsEnabled.el,
+  const authorization = ui.h('div', 'astrbot-group');
+  authorization.append(
+    ui.h('div', 'astrbot-glabel', '桌面权限'),
+    ui.kv([
+      { k: '主人工具', v: st.ownerTools ? '已授权' : '未授权' },
+      { k: '主动发送 QQ', v: st.desktopSend ? '已授权' : '未授权' },
+    ]),
+    ui.h('div', 'astrbot-note', '在 AstrBot 管理页分别授权工具及主动发送目标。'),
   );
 
   const behavior = ui.h('div', 'astrbot-group');
@@ -384,9 +332,13 @@ function settingsCard(
   const submit = ui.h('div', 'astrbot-submit');
   submit.append(retry, bar.el);
 
-  card.body.append(head(ctx, st), bridge, modeCard(ctx, st, reload, () => dirty.value || saving));
-  if (st.mode === 'full') card.body.append(tools);
-  card.body.append(advanced, submit);
+  const connection = ui.h('details', 'astrbot-advanced');
+  connection.open = !st.connected && st.wsUrl !== LOCAL_BRIDGE_URL;
+  connection.append(ui.h('summary', '', '地址和令牌'), bridge, advanced, submit);
+  card.body.append(head(ctx, st), modeCard(ctx, st, reload, () => dirty.value || saving));
+  if (st.connectionError) card.body.append(ui.h('div', 'astrbot-note', st.connectionError));
+  if (st.mode === 'full') card.body.append(authorization);
+  card.body.append(connection);
   return card.el;
 }
 
@@ -418,12 +370,26 @@ function runtimeCard(ctx: WebUiPanelContext, st: ConnectionState): HTMLElement {
 export const connectionPanel: WebUiPanel = {
   mount(ctx) {
     const dirty = { value: false };
+    let snapshot: ConnectionState | undefined;
+    let refresh: (() => void) | undefined;
+    ctx.interval(() => {
+      if (!snapshot || !refresh || dirty.value) return;
+      void ctx.invoke<ConnectionState>('state').then((state) => {
+        if (!snapshot || dirty.value || ctx.signal.aborted) return;
+        if (state.mode !== snapshot.mode || state.modeApprovalPending !== snapshot.modeApprovalPending
+          || state.connected !== snapshot.connected || state.ownerBound !== snapshot.ownerBound
+          || state.ownerTools !== snapshot.ownerTools || state.desktopSend !== snapshot.desktopSend
+          || state.connectionError !== snapshot.connectionError) refresh?.();
+      }).catch(() => {});
+    }, 3000);
     ctx.guardLeave(() => (dirty.value ? '连接设置还没保存，确定离开？' : null));
     autoload<ConnectionState>(ctx, {
       loading: '正在读取连接状态…',
       failed: '读取连接状态失败',
       load: () => ctx.invoke<ConnectionState>('state'),
       render: (st, reload) => {
+        snapshot = st;
+        refresh = reload;
         const { ui } = ctx;
         const layout = ui.h('div', 'astrbot-layout');
         const main = ui.h('div', 'astrbot-main');

@@ -9,9 +9,9 @@ import type { ConfigGroup, ConfigProperty } from 'cortico/core/types.ts';
 export interface AstrbotConfigSection {
   /** 本地开关，默认关闭，由插件或 bot 打开。 */
   enabled: boolean;
-  /** 桥的 WS 地址，例如 ws://192.0.2.10:17999。 */
+  /** 桥的连接地址，支持 WS 和 WSS。 */
   wsUrl: string;
-  /** 桥 token；留空表示不校验。 */
+  /** 桥 token；本机回环可以留空。 */
   token: string;
   /** 投递给 Coo 的消息是否带 HH:MM 时间前缀。 */
   includeTime: boolean;
@@ -21,13 +21,6 @@ export interface AstrbotConfigSection {
   reconnectMaxMs: number;
   /** 回复 QQ 消息时附带渠道提示（@/图片/私聊）。 */
   channelHint: boolean;
-  /**
-   * Coo 对话轮次调用 AstrBot 工具时使用的管理员 QQ。
-   * 留空表示 Coo 轮次不借工具身份；AstrBot 的管理员名单仍是唯一权限来源。
-   */
-  ownerId: string;
-  /** 是否向桥提交部署中的主人工具令牌。 */
-  ownerToolsEnabled: boolean;
   /** 允许用 at=["all"] @全体；默认关闭，避免误触发整群。 */
   allowAtAll: boolean;
 
@@ -65,16 +58,48 @@ export function parseAliases(raw: unknown): string[] {
     .filter((s) => s !== '');
 }
 
+export const LOCAL_BRIDGE_URL = 'ws://127.0.0.1:17999';
+
+function isLoopbackBridgeHost(hostname: string): boolean {
+  return /^(?:localhost|\[::1\]|127(?:\.\d{1,3}){3})$/i.test(hostname);
+}
+
+export function bridgeAddressError(address: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(address);
+  } catch {
+    return '请输入有效的 WebSocket 地址。';
+  }
+  if (url.username || url.password || [...url.searchParams.keys()].some(key => /^(?:token|access_token|password|auth|authorization|api_?key)$/i.test(key))) {
+    return '请将令牌填入专用字段。桥地址不能包含凭据。';
+  }
+  if (url.hash || (url.protocol !== 'ws:' && url.protocol !== 'wss:')) return '桥地址须以 ws:// 或 wss:// 开头，且不包含片段。';
+  return undefined;
+}
+
+export function usesRemotePlaintextBridge(address: string): boolean {
+  if (bridgeAddressError(address)) return false;
+  const url = new URL(address);
+  return url.protocol === 'ws:' && !isLoopbackBridgeHost(url.hostname);
+}
+
+export function bridgeCredentialError(address: string, token: string, alreadyStored = false): string | undefined {
+  if (token && !/^[A-Za-z0-9._~+/-]+=*$/.test(token)) return '请使用 AstrBot 生成的桥接令牌。';
+  if (!token && !alreadyStored && address && !bridgeAddressError(address) && !isLoopbackBridgeHost(new URL(address).hostname)) {
+    return '跨机连接须填写桥接令牌。';
+  }
+  return undefined;
+}
+
 export const ASTRBOT_DEFAULTS: AstrbotConfigSection = {
   enabled: false,
-  wsUrl: '',
+  wsUrl: LOCAL_BRIDGE_URL,
   token: '',
   includeTime: true,
   reconnectBaseMs: 1000,
   reconnectMaxMs: 30_000,
   channelHint: true,
-  ownerId: '',
-  ownerToolsEnabled: true,
   allowAtAll: false,
   // 旧配置兼容；World 不再读取，实际策略由 AstrBot 插件决定。
   mode: 'mention',
@@ -97,7 +122,7 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         title: '桥地址',
         'x-hot': false,
         description:
-          'AstrBot 桥上监听的 WebSocket 地址，例如 ws://192.0.2.10:17999。必须是 World 能访问的地址。',
+          '默认连接 ws://127.0.0.1:17999。跨机支持 ws:// 和 wss://，均需桥接令牌。',
       },
       'worlds.astrbot.includeTime': {
         type: 'boolean',
@@ -131,23 +156,6 @@ export const ASTRBOT_CONFIG_GROUP: ConfigGroup = {
         'x-hot': true,
         description:
           '回复 QQ 消息时附带渠道提示（@、图片、私聊），只说明 QQ 发送方式，不改变其他 World 的回复工具。',
-      },
-      'worlds.astrbot.ownerId': {
-        type: 'string',
-        title: '主人 QQ',
-        'x-hot': true,
-        description:
-          '主人 QQ：Coo 侧调用 AstrBot 工具时借用的管理员身份，也是从 Coo 主动发 QQ 时的授权依据；必须是 AstrBot 的 admins_id 之一。留空表示不借身份、也不允许主动发送。',
-        // JSON Schema 约束：纯数字、20 位以内。Cortico 配置页当前不消费这两项，
-        // 面板保存前另做同样校验（见 webui/connection.ts）。
-        pattern: '^\\d*$',
-        maxLength: 20,
-      } as ConfigProperty,
-      'worlds.astrbot.ownerToolsEnabled': {
-        type: 'boolean',
-        title: '启用主人工具授权',
-        'x-hot': false,
-        description: '使用在连接页保存的独立工具令牌。远程连接使用 wss://，本机可使用回环地址。',
       },
       'worlds.astrbot.allowAtAll': {
         type: 'boolean',

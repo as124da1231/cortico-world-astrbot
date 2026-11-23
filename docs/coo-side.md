@@ -95,7 +95,7 @@ astrbot_send_message
 边界：
 
 ```text
-非 QQ 轮次            → 只有填了主人 QQ、且显式指定目标才允许主动发
+非 QQ 轮次            → 完整模式中，按 AstrBot 明确授权的目标以机器人身份发送
 过期轮次              → 拒绝
 多会话但不指定目标    → 拒绝
 显式目标没有 UMO      → 拒绝，不发帧
@@ -118,9 +118,8 @@ QQ 轮次
   → 插件用那条消息的身份执行
 
 Coo 对话轮次
-  → 桥的 ready 确认独立工具令牌已获授权
-  → 连接页填写 AstrBot 指定的主人 QQ（ownerId）
-  → 帧 {t:'tool', rid, name, args, turn:'', actor:{kind:'owner', id}}
+  → 桥的 ready 确认桌面主人工具已获授权
+  → 帧 {t:'tool', rid, name, args, turn:'', actor:{kind:'desktop'}}
   → 插件校验连接授权、指定 QQ 和管理员名单
   → 合成「主人私聊」事件，role=admin
   → 工具的 event.send 落到主人私聊
@@ -128,14 +127,14 @@ Coo 对话轮次
 tool-ack → 模型
 ```
 
-没有 `ownerId` 时 Coo 轮次不借身份，直接告诉 Coo 去填。过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。World 侧若已经收到管理员名单，会先检查 `ownerId` 是否在名单里；名单还没到时不拦，由插件最终校验。
+桌面工具授权由 AstrBot 管理页配置。过期的 QQ 轮次直接拒绝，身份不会切换到桌面主人。
 
 插件侧还会检查：
 
 ```text
 enabled
 turn 在 _turns 里，600 秒内（QQ 轮次）
-actor.id 在 admins_id 里（Coo 轮次）
+AstrBot 绑定的主人 QQ 在 admins_id 里（桌面轮次）
 tools_allow
 AstrBot 工具权限
 ```
@@ -173,7 +172,7 @@ astrbot.disconnected
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `enabled` | `false` | 挂载开关；启停由 Coo 的 World 页控制 |
-| `wsUrl` | 空 | `ws://<桥地址>:17999` |
+| `wsUrl` | `ws://127.0.0.1:17999` | 跨机支持 WS 和 WSS，均需令牌 |
 | `token` | 空 | 与插件一致；两边都空表示不校验 |
 | `mode` | `mention` | deprecated，策略已归插件 |
 | `nameAliases` | 空 | deprecated |
@@ -182,7 +181,6 @@ astrbot.disconnected
 | `channelHint` | `true` | 是否在需要回复的消息后加渠道提示 |
 | `reconnectBaseMs` | `1000` | 断线后第一次重连等待 |
 | `reconnectMaxMs` | `30000` | 重连等待上限 |
-| `ownerId` | 空 | Coo 对话轮次调用 AstrBot 工具时借用的管理员 QQ；留空表示不借 |
 
 ### Coo 侧「连接」页
 
@@ -191,7 +189,7 @@ World 页的第一个页签是「连接」，只放 Coo 这一端的东西：
 ```text
 状态        已连接 / 等待连接 / 未启用，桥地址
 接入        桥地址、桥 token（含「清除已存 token」）
-工具身份    主人 QQ + 当前 AstrBot 管理员名单
+桌面权限    由 AstrBot 授权的主人工具与主动发送，只读
 行为        时间前缀、渠道提示、重连初始间隔与上限
 运行时      自报身份、主人、语音、工具数、会话数（只读）
 ```
@@ -201,11 +199,11 @@ World 页的第一个页签是「连接」，只放 Coo 这一端的东西：
 保存经 `ctx.setConfig('world:astrbot', ...)` 写回配置：
 
 ```text
-includeTime / channelHint / ownerId   保存后即时生效
-wsUrl / token / reconnect*            保存后要点「重启 World」
+includeTime / channelHint   保存后即时生效
+wsUrl / token / reconnect*            「保存并应用」时重连
 ```
 
-token 输入框留空表示保持原值；要清空必须显式点「清除已存 token」。保存期间表单锁定，等待期的改动会提示尚未提交，不会被刷新静默覆盖。主人 QQ 只接受数字、最长 20 位。
+token 输入框留空表示保持原值；要清空必须显式点「清除已存 token」。保存期间表单锁定，等待期的改动会提示尚未提交，不会被刷新静默覆盖。
 
 群聊范围、私聊白名单、工具勾选和语音 Provider 仍在 AstrBot 插件页；
 「配置」页签保留同一个 World 的通用表单，作为兜底。

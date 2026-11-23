@@ -11,6 +11,7 @@ import WebSocket from 'ws';
 import type { Logger } from 'cortico/core/types.ts';
 import { nullLogger } from 'cortico/core/util.ts';
 import { parseSegments, type MessageSegment } from './message-segments.ts';
+import { bridgeAddressError, bridgeCredentialError } from './config.ts';
 
 /** 会话种类：群聊或私聊。 */
 export type ConvKind = 'group' | 'private';
@@ -114,8 +115,7 @@ export interface ToolInfo {
 
 /** 一次工具调用的身份：QQ 轮次用 turn，Coo 轮次用主人。 */
 export interface ToolActor {
-  kind: 'owner';
-  id: string;
+  kind: 'desktop';
 }
 
 /** 一次工具调用的回执。 */
@@ -156,11 +156,15 @@ export interface BridgeDriver {
   /** 桥报来的管理员 QQ 号；空数组表示还没收到。 */
   readonly ownerIds: string[];
   readonly ownerTools?: boolean;
+  readonly desktopSend?: boolean;
+  readonly ownerBound?: boolean;
+  readonly modeApprovalPending?: boolean;
+  readonly connectionError?: string;
   /** 桥自报的语音能力；没收到时按不可用。 */
   readonly tts: BridgeTtsInfo;
   /** 桥那边启用的工具清单；桥没连上时是上一次收到的。 */
   readonly tools: ToolInfo[];
-  onMessage(cb: (m: BridgeMessage) => void): void;
+  onMessage(cb: (m: BridgeMessage) => void | false): void;
   onNotice(cb: (n: BridgeNotice) => void): void;
   onState(cb: (connected: boolean) => void): void;
   /** 桥握手时自报记得的会话（含重启前恢复的），用于主动发送。 */
@@ -184,10 +188,11 @@ export interface BridgeDriver {
 export interface BridgeDriverOptions {
   wsUrl: string;
   token?: string;
-  ownerToolToken?: string;
   /** 握手时自报的能力；桥据此决定要不要把图片传过来。 */
   capabilities?: Record<string, boolean>;
   requireModeSync?: boolean;
+  /** 返回 false 时，让服务端等下一次 World 挂载后再确认这一代模式。 */
+  acceptMode?: (mode: BridgeMode) => boolean;
   /** 重连等待起点。 */
   reconnectBaseMs?: number;
   /** 重连等待封顶。 */
@@ -264,7 +269,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   private lastActivity = 0;
   private ridSeq = 0;
   private pending = new Map<string, PendingSend>();
-  private messageCbs: Array<(m: BridgeMessage) => void> = [];
+  private messageCbs: Array<(m: BridgeMessage) => void | false> = [];
   private noticeCbs: Array<(n: BridgeNotice) => void> = [];
   private stateCbs: Array<(connected: boolean) => void> = [];
   private toolsCbs: Array<(tools: ToolInfo[]) => void> = [];
@@ -282,6 +287,11 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   /** 桥报来的管理员 QQ 号：QQ 上这些人是主人本人。 */
   ownerIds: string[] = [];
   ownerTools = false;
+  desktopSend = false;
+  ownerBound = false;
+  modeApprovalPending = false;
+  private modeOffer?: { mode: BridgeMode; revision: string };
+  connectionError?: string;
   /** 桥自报的语音能力；没收到时按不可用。 */
   tts: BridgeTtsInfo = { ready: false };
 
@@ -325,7 +335,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     if (error) pending.reject(new Error(error)); else pending.resolve();
   }
 
-  onMessage(cb: (m: BridgeMessage) => void): void {
+  onMessage(cb: (m: BridgeMessage) => void | false): void {
     this.messageCbs.push(cb);
   }
 
@@ -492,31 +502,30 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       }
     };
 
-    const token = this.opts.token;
-    // HTTP 头只能放可打印 ASCII；自定义的非 ASCII token 走 hello 帧（兼容路径）。
-    const headerToken = token && /^[\x20-\x7e]+$/.test(token) ? token : '';
+    const address = this.opts.wsUrl.trim();
+    const token = this.opts.token?.trim() ?? '';
+    const validationError = bridgeAddressError(address) ?? bridgeCredentialError(address, token);
+    if (validationError) {
+      this.connectionError = validationError;
+      this.log.warn('无法连接 AstrBot 桥', { reason: validationError });
+      settle();
+      return;
+    }
     const handshakeMs = this.opts.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     this.ownerTools = false;
+    this.desktopSend = false;
+    this.ownerBound = false;
+    this.modeOffer = undefined;
     let ws: WebSocket;
     try {
-      const url = new URL(this.opts.wsUrl);
-      const local = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(url.hostname);
-      const ownerToken = this.opts.ownerToolToken?.trim();
-      const headers: Record<string, string> = {};
-      if (headerToken) headers.Authorization = `Bearer ${headerToken}`;
-      if (token && ownerToken && /^[\x21-\x7e]+$/.test(ownerToken) && (local || url.protocol === 'wss:')) {
-        headers['X-Cortico-Owner-Token'] = ownerToken;
-      }
-      ws = new WebSocket(this.opts.wsUrl, {
-        headers,
+      ws = new WebSocket(address, {
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+        rejectUnauthorized: true,
         // 对端只接受 TCP、不回 101 时，ws 自己不会超时；这里必须给。
         ...(handshakeMs > 0 ? { handshakeTimeout: handshakeMs } : {}),
       });
     } catch (err) {
-      this.log.warn('桥地址无法解析', {
-        wsUrl: this.opts.wsUrl,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      this.log.warn('桥地址无法解析');
       settle();
       this.scheduleReconnect();
       return;
@@ -527,7 +536,6 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       guard = setTimeout(() => {
         if (this.stopped || this.ws !== ws || settled) return;
         this.log.warn('桥连接在握手超时内没有完成，重建连接', {
-          wsUrl: this.opts.wsUrl,
           timeoutMs: handshakeMs + HANDSHAKE_GUARD_EXTRA_MS,
         });
         try {
@@ -548,14 +556,13 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       this.connected = !this.opts.requireModeSync;
       // 退避不在这里重置：open 只说明 TCP/Upgrade 成功，token/版本错的连接
       // 也是 open 之后才被桥用 4003/4004 拒绝。重置放在收到首个 ready 时。
-      this.log.info('已连上 AstrBot 桥', { wsUrl: this.opts.wsUrl });
+      this.log.info('已连上 AstrBot 桥');
       try {
-        // 握手帧：带上 token 与自己的显示名，桥据此认人。
+        // 凭据仅通过 Upgrade 请求头发送。
         ws.send(
           JSON.stringify({
             t: 'hello',
-            v: 2,
-            token: token ?? '',
+            v: 3,
             name: 'Cortico',
             capabilities: this.opts.capabilities ?? {},
           }),
@@ -567,13 +574,14 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       }
       if (!this.opts.requireModeSync) this.emitState(true);
       this.startHeartbeat(ws);
-      settle();
+      if (!this.opts.requireModeSync) settle();
     });
 
     ws.on('message', (data) => {
       if (!this.stopped && this.ws === ws) {
         this.lastActivity = Date.now();
         this.handleFrame(String(data));
+        if (this.connected) settle();
       }
     });
 
@@ -589,10 +597,15 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     ws.on('error', (err) => {
       // 旧 socket 在关闭前还会补一条 error；那不是现在的连接状态，别记成新错误。
       if (this.stopped || this.ws !== ws) return;
-      this.log.warn('桥连接错误', { error: err.message });
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      const tlsFailure = /^(?:ERR_(?:TLS|SSL)_|CERT_|DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_(?:VERIFY|GET_ISSUER))/.test(code);
+      this.connectionError = tlsFailure
+        ? 'WSS 校验或握手失败，请检查证书、地址和 TLS 代理。'
+        : '无法连接 AstrBot 桥，请检查桥是否启动以及地址是否可达。';
+      this.log.warn('桥连接错误', { code });
     });
 
-    ws.on('close', (code, reason) => {
+    ws.on('close', (code) => {
       const isCurrent = this.ws === ws;
       const wasConnected = this.connected;
       if (isCurrent) {
@@ -605,9 +618,9 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       if (isCurrent && !this.stopped) {
         const hint = CLOSE_REASONS[code];
         if (hint) {
+          this.connectionError = hint;
           this.log.warn('桥拒绝了这次连接', {
             code,
-            reason: reason?.toString() || hint,
             hint,
           });
         }
@@ -696,8 +709,10 @@ export class AstrbotBridgeDriver implements BridgeDriver {
 
     if (t === 'mode-status') {
       if (frame.mode !== 'full' && frame.mode !== 'safe' || typeof frame.modeRevision !== 'string') return;
+      if (this.opts.requireModeSync && (this.modeOffer?.mode !== frame.mode || this.modeOffer.revision !== frame.modeRevision)) return;
       this.mode = frame.mode;
       this.modeRevision = frame.modeRevision;
+      this.modeApprovalPending = frame.pending === true;
       const active = frame.active === true;
       if (this.connected !== active) {
         this.connected = active;
@@ -711,12 +726,21 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       const rid = String(frame.rid ?? '');
       if (rid !== this.pendingMode?.rid) return;
       if (typeof frame.error === 'string' && frame.error) this.completeMode(rid, frame.error);
-      else if (typeof frame.modeRevision === 'string') this.ws?.send(JSON.stringify({ t: 'mode-accept', rid, modeRevision: frame.modeRevision }));
+      else if (frame.pending === true) {
+        this.modeApprovalPending = true;
+        this.completeMode(rid);
+      }
+      else if ((frame.mode === 'full' || frame.mode === 'safe') && typeof frame.modeRevision === 'string') {
+        if (!this.acceptModeOffer(frame.mode, frame.modeRevision, rid)) this.completeMode(rid);
+      }
       return;
     }
 
     // 应用层心跳：只用来刷新活跃时间，不需要进 World。
-    if (t === 'tick') return;
+    if (t === 'tick') {
+      if (typeof frame.modeApprovalPending === 'boolean') this.modeApprovalPending = frame.modeApprovalPending;
+      return;
+    }
 
     if (t === 'ack') {
       const rid = String(frame.rid ?? '');
@@ -789,10 +813,19 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     }
 
     if (t === 'ready') {
-      if (this.opts.requireModeSync && typeof frame.modeRevision === 'string') {
-        this.ws?.send(JSON.stringify({ t: 'mode-accept', modeRevision: frame.modeRevision }));
+      if (this.opts.requireModeSync) {
+        if (frame.v !== 3 || (frame.mode !== 'full' && frame.mode !== 'safe') || typeof frame.modeRevision !== 'string' || !frame.modeRevision) {
+          this.connectionError = 'AstrBot 桥的协议或模式信息无效，请更新配套插件。';
+          this.ws?.close(4004, 'invalid bridge protocol');
+          return;
+        }
+        if (!this.acceptModeOffer(frame.mode, frame.modeRevision)) return;
       }
+      this.connectionError = undefined;
       this.ownerTools = frame.ownerTools === true;
+      this.desktopSend = frame.desktopSend === true;
+      this.ownerBound = frame.ownerBound === true;
+      this.modeApprovalPending = frame.modeApprovalPending === true;
       const self = frame.self as { id?: unknown; name?: unknown } | undefined;
       this.self = {
         id: self?.id === undefined ? undefined : String(self.id),
@@ -840,24 +873,36 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     }
 
     if (t === 'msg') {
-      if (this.opts.requireModeSync && (!this.connected || frame.modeRevision !== this.modeRevision)) return;
+      const deliveryId = typeof frame.deliveryId === 'string' && /^[0-9a-f]{32}$/.test(frame.deliveryId)
+        ? frame.deliveryId : undefined;
+      const acknowledge = (accepted: boolean): void => {
+        if (deliveryId) this.ws?.send(JSON.stringify({ t: 'msg-ack', deliveryId, accepted }));
+      };
+      if (this.opts.requireModeSync && (!this.connected || frame.modeRevision !== this.modeRevision)) {
+        acknowledge(false);
+        return;
+      }
       const msg = parseMessage(frame);
       if (!msg) {
         this.log.warn('消息帧形状不符，已忽略');
+        acknowledge(false);
         return;
       }
       if (msg.umoInvalid) {
         this.log.warn('消息帧的 UMO 非法，已按 conv 处理');
       }
+      let accepted = false;
       for (const cb of [...this.messageCbs]) {
         try {
-          cb(msg);
+          const result = cb(msg);
+          if (result !== false) accepted = true;
         } catch (err) {
           this.log.error('消息回调抛错', {
             error: err instanceof Error ? err.message : String(err),
           });
         }
       }
+      acknowledge(accepted);
       return;
     }
 
@@ -883,6 +928,17 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     this.log.debug('未知帧类型，已忽略', { t });
   }
 
+  private acceptModeOffer(mode: BridgeMode, revision: string, rid?: string): boolean {
+    if (this.connected && this.modeRevision !== revision) {
+      this.connected = false;
+      this.emitState(false);
+    }
+    if (this.opts.acceptMode?.(mode) === false) return false;
+    this.modeOffer = { mode, revision };
+    this.ws?.send(JSON.stringify({ t: 'mode-accept', modeRevision: revision, ...(rid ? { rid } : {}) }));
+    return true;
+  }
+
   private emitState(connected: boolean): void {
     for (const cb of [...this.stateCbs]) {
       try {
@@ -898,6 +954,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   private rejectAllPending(reason: string, uncertain = false): void {
     if (this.pendingMode) this.completeMode(this.pendingMode.rid, reason);
     this.modeRevision = undefined;
+    this.modeApprovalPending = false;
     for (const call of this.pending.values()) {
       clearTimeout(call.timer);
       call.resolve({ ok: false, error: reason, uncertain });

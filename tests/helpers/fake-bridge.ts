@@ -8,6 +8,7 @@ import type {
   OutgoingImage,
   SendResult,
   ToolInfo,
+  ToolActor,
   ToolResult,
 } from '../../src/driver.ts';
 
@@ -103,7 +104,9 @@ export class FakeDriver implements BridgeDriver {
   connected = false;
   self?: { id?: string; name?: string };
   ownerIds: string[] = [];
-  ownerTools = true;
+  mode: 'full' | 'safe' = 'full';
+  ownerTools = false;
+  desktopSend = false;
   tts = { ready: false } as { ready: boolean; provider?: string };
   tools: ToolInfo[] = [];
   started = 0;
@@ -117,7 +120,7 @@ export class FakeDriver implements BridgeDriver {
     name: string;
     args: Record<string, unknown>;
     turn: string;
-    actor?: { kind: 'owner'; id: string };
+    actor?: ToolActor;
   }> = [];
   toolResult: ToolResult = { ok: true, result: 'ok' };
 
@@ -146,7 +149,7 @@ export class FakeDriver implements BridgeDriver {
     name: string,
     args: Record<string, unknown>,
     turn: string,
-    actor?: { kind: 'owner'; id: string },
+    actor?: ToolActor,
   ): Promise<ToolResult> {
     this.toolCalls.push({ name, args, turn, ...(actor ? { actor } : {}) });
     return this.toolResult;

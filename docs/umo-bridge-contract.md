@@ -1,6 +1,6 @@
 # Cortico ↔ AstrBot：UMO 与两端配置契约
 
-状态：v2（单通道，双端同步模式与工具授权）
+状态：桥协议 v3（单通道，双端同步模式与工具授权）
 
 握手后，`ready` 带 `mode` 和 `modeRevision`。World 发 `mode-accept` 并收到 `mode-status` 后，桥才接管 QQ。确认切换时发 `mode-change`，带已知 `modeRevision`、新的 `mode` 和 `rid`；收到 `mode-prepare` 后按同样方式接受新代次。不同步时由 AstrBot 原有流程处理。
 
@@ -187,14 +187,13 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
   "channelHint": true,
   "reconnectBaseMs": 1000,
   "reconnectMaxMs": 30000,
-  "ownerId": "",
   "allowAtAll": false
 }
 ```
 
 - `enabled` 是挂载开关，默认关闭；**启停只在 Coo 的 World 页**，不在本 World 的面板里。
 - `reconnectBaseMs` / `reconnectMaxMs` 默认 1000 / 30000；token 或版本被桥拒绝时，退避至少 10 秒起步，收到 `ready` 后才恢复初始值。
-- `ownerId` 是 Coo 对话轮次调用 AstrBot 工具、以及非 QQ 轮次主动发 QQ 时借用的管理员 QQ；纯数字、20 位以内，留空表示不借身份、也不允许主动发送。
+- 主人绑定、桌面工具和主动发送目标由 AstrBot 管理员配置。Coo 只保存桥接令牌。
 - `allowAtAll`（1.3.6）默认 `false`，打开后群内才接受 `at: ["all"]`；面板暂无开关，直接改 `config.json`，改完即生效。
 
 ### 5.2 废弃
@@ -216,9 +215,9 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 ### 6.1 基本帧
 
 ```json
-{ "t": "hello", "v": 2, "token": "…", "name": "Cortico", "capabilities": { "images": true } }
+{ "t": "hello", "v": 3, "name": "Cortico", "capabilities": { "images": true } }
 
-{ "t": "ready", "v": 2, "channel": "qq", "mode": "full", "modeRevision": "当前代次",
+{ "t": "ready", "v": 3, "channel": "qq", "mode": "full", "modeRevision": "当前代次",
   "self": { "id": "…", "name": "…" },
   "admins": ["42"],
   "tts": { "ready": true, "provider": "edge_tts" },
@@ -228,10 +227,12 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
   ] }
 ```
 
-- 第一帧必须是 `hello`，`v` 必须是 `2`。版本不对 → close `4004`，token 不对 → `4003`，第一帧不是 hello → `4002`。URL 带 token → `4401`，带 Origin → `4403`。
-- token 也可放在 `Authorization: Bearer …`；头和帧都出现时必须一致。
+- 第一帧必须是 `hello`，`v` 必须是 `3`。版本不对 → close `4004`，token 不对 → `4003`，第一帧不是 hello → `4002`。URL 带 token → `4401`，带 Origin → `4403`。
+- 令牌只放在 WebSocket Upgrade 的 `Authorization: Bearer …` 请求头。
 - `ready` 之前的连接不算就绪。`admins` 是 AstrBot 管理员名单，`tts` 是语音能力（旧版是布尔值，World 两种都认）。
 - `conversations`（1.3.6 起）是桥记得的最近会话，最多 20 条，按 `age_sec` 升序；World 用它支持非 QQ 轮次的主动发送。要发到没列出的会话，先在目标会话说一句。
+
+World 声明 `capabilities.message_delivery_ack` 后，对带 `deliveryId` 的 `msg` 用 `msg-ack` 回报相同 ID 及 `accepted`。桥将明确拒收交还 AstrBot，回执超时时保留原处理权，避免两个出口各回复一次。
 
 ### 6.2 收消息
 
@@ -340,14 +341,14 @@ AstrBot 可能同时接多个平台/账号（例如 `default`、`default1`、Web
 { "t": "tool", "rid": "t-1", "name": "get_weather", "args": { "city": "上海" },
   "turn": "触发这一轮的消息id" }
 { "t": "tool", "rid": "t-2", "name": "get_weather", "args": { "city": "上海" },
-  "turn": "", "actor": { "kind": "owner", "id": "42" } }
+  "turn": "", "actor": { "kind": "desktop" } }
 
 { "t": "tool-ack", "rid": "t-1", "ok": true, "result": "…" }
 { "t": "tool-ack", "rid": "t-2", "ok": false, "error": "tool_failed", "note": "…" }
 ```
 
 - `turn` 与 `actor` 只能二选一；都没有 → `missing_identity`，同时都有 → `ambiguous_identity`，actor 形状不对 → `bad_actor`。
-- 插件再次校验 `turn` 未过期（600 秒）、`tools_allow` 与 AstrBot 工具权限。主人 `actor.id` 须匹配桥端管理员，并由独立工具令牌授权。`ready.ownerTools` 刷新当前连接的授权状态，缺失按未授权处理。`owner_auth_required` 表示本次调用未获得主人授权。
+- 插件再次校验 `turn` 未过期（600 秒）、`tools_allow` 与 AstrBot 工具权限。发送 `actor: { "kind": "desktop" }` 时，由 AstrBot 核对服务端主人绑定、管理员和桥接令牌。`ready.ownerTools` 刷新当前连接的授权状态，缺失按未授权处理。`owner_auth_required` 表示本次调用未获得主人授权。
 - 工具异常返回 `tool_failed`，异常原文只进插件日志。
 
 ---
@@ -403,7 +404,7 @@ type Conv = {
 
 | World | 插件 | 行为 |
 |---|---|---|
-| 1.3.9 | 1.3.9 | 协议 v2，模式同步后接管。安全模式要求宿主提供独立轮次接口 |
+| 1.3.9 | 1.3.9 | 协议 v3，模式同步后接管。两种模式均使用原版 Coo 的主会话 |
 | 1.3.9 | 1.3.8 或更早 | 协议版本不匹配，桥接不可用 |
 | 1.3.8 或更早 | 1.3.9 | 协议版本不匹配，桥接不可用 |
 | 1.3.6 | 1.3.6 | UMO 单通道，完整功能；`at` / `conversations` 需要两端都 ≥ 1.3.6 |

@@ -86,23 +86,24 @@ describe('配置解析', () => {
 });
 
 describe('装配', () => {
-  it('工具令牌只存部署密钥，连接状态只返回设置状态', async () => {
+  it('桥接令牌只存部署密钥，连接状态只返回设置状态', async () => {
     let stored = '';
     const world = new AstrbotWorld({
-      cfg: config(),
+      cfg: config({ token: 'secret-fixture-bridge-token' }),
       timezone: 'Asia/Shanghai',
-      ownerToolSecret: { read: () => stored, store: (value) => { stored = value; } },
+      storeBridgeToken: (value) => { stored = value; },
     });
     const invoke = world.webUi().invoke!;
-    await expect(invoke('connection', 'save-owner-token', ['invalid token'])).rejects.toThrow();
-    await expect(invoke('connection', 'save-owner-token', ['secret-fixture-owner-token'])).resolves.toEqual({ saved: true });
+    await expect(invoke('connection', 'save-owner-token', ['second token'])).rejects.toThrow();
+    await expect(invoke('connection', 'save-bridge-token', ['invalid token'])).rejects.toThrow();
+    await expect(invoke('connection', 'save-bridge-token', ['secret-fixture-bridge-token'])).resolves.toEqual({ saved: true });
     const result = await invoke('connection', 'state', []);
-    expect(result).toMatchObject({ ownerToolTokenSet: true, ownerTools: false });
+    expect(result).toMatchObject({ tokenSet: true, ownerTools: false });
     expect(JSON.stringify(result)).not.toContain(stored);
   });
 
   it('桥未确认主人工具授权时不派发工具调用', async () => {
-    const { world, driver } = await mount({ ownerId: '100000001' });
+    const { world, driver } = await mount();
     driver.ownerIds = ['100000001'];
     driver.ownerTools = false;
     const result = await toolHandler(world, 'astrbot_call_tool')({ name: 'test_tool' }, toolCtx());
@@ -494,7 +495,7 @@ describe('发消息工具', () => {
     );
     expect(driver.sent).toHaveLength(0);
     expect(typeof out === 'string' ? false : out.failed).toBe(true);
-    expect(typeof out === 'string' ? out : out.text).toContain('先在「连接」里填主人 QQ');
+    expect(typeof out === 'string' ? out : out.text).toContain('请在 AstrBot 管理页授权');
   });
 
   it('回复默认带上 UMO，发送端以 UMO 为主键', async () => {
@@ -1154,7 +1155,7 @@ describe('环境提示词变量', () => {
   it('未连接与已连接给出不同的话', async () => {
     const { world } = await mount({ mode: 'mention', nameAliases: 'Coo' });
     const vars = world.envPromptVars();
-    expect(vars['astrbot.scope']).toContain('AstrBot 插件控制');
+    expect(vars['astrbot.scope']).toContain('由 AstrBot 管理');
     expect(vars['astrbot.connection']).toContain('已连上');
   });
 
@@ -1336,9 +1337,9 @@ describe('工具桥接', () => {
     expect(text).toContain('主人 QQ');
   });
 
-  it('Coo 轮次用连接页里的主人 QQ 借身份', async () => {
-    const { driver, world } = await mount({ ownerId: '100000001' });
-    driver.ownerIds = ['100000001'];
+  it('Coo 桌面轮次只声明来源，由 AstrBot 识别主人 QQ', async () => {
+    const { driver, world } = await mount();
+    driver.ownerTools = true;
     driver.toolResult = { ok: true, result: '晴天 / 周杰伦' };
 
     const out = await handlerOf(world, 'astrbot_call_tool')(
@@ -1351,21 +1352,20 @@ describe('工具桥接', () => {
         name: 'query_lyrics_by_name',
         args: { song: '晴天' },
         turn: '',
-        actor: { kind: 'owner', id: '100000001' },
+        actor: { kind: 'desktop' },
       },
     ]);
     const text = typeof out === 'string' ? out : out.text;
     expect(text).toBe('晴天 / 周杰伦');
   });
 
-  it('主人 QQ 不在 AstrBot 管理员里时拒绝', async () => {
-    const { driver, world } = await mount({ ownerId: '10001' });
-    driver.ownerIds = ['100000001'];
+  it('AstrBot 未开放桌面工具时拒绝', async () => {
+    const { driver, world } = await mount();
 
     const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls).toHaveLength(0);
     const text = typeof out === 'string' ? out : out.text;
-    expect(text).toContain('不在 AstrBot 的管理员名单');
+    expect(text).toContain('请在 AstrBot 管理页授权');
   });
 
   it('两个 QQ 会话混入同一批时不能借最后一条消息的工具权限', async () => {
@@ -1626,8 +1626,8 @@ describe('工具身份：过期轮次不得回退 owner', () => {
 
   it('过期的 QQ 轮次不借主人身份', async () => {
     vi.useFakeTimers();
-    const { driver, world } = await mount({ ownerId: '100000001' });
-    driver.ownerIds = ['100000001'];
+    const { driver, world } = await mount();
+    driver.ownerTools = true;
     world.onEventsSettled([humanEvent()], 'delivered');
     vi.advanceTimersByTime(QQ_TURN_TTL_MS + 1);
 
@@ -1637,8 +1637,8 @@ describe('工具身份：过期轮次不得回退 owner', () => {
   });
 
   it('QQ 轮次没有可执行消息 id 时拒绝，不回退 owner', async () => {
-    const { driver, world } = await mount({ ownerId: '100000001' });
-    driver.ownerIds = ['100000001'];
+    const { driver, world } = await mount();
+    driver.ownerTools = true;
     // 有人话，但帧里没有 message_id：不能拿来当工具身份。
     const noId = {
       type: 'astrbot.message',
@@ -1685,19 +1685,20 @@ describe('工具身份：过期轮次不得回退 owner', () => {
     expect(driver.toolCalls[1]?.actor).toBeUndefined();
   });
 
-  it('纯 Coo 轮次仍用连接页里的主人 QQ', async () => {
-    const { driver, world } = await mount({ ownerId: '100000001' });
-    driver.ownerIds = ['100000001'];
+  it('纯 Coo 轮次使用 AstrBot 已开放的桌面工具', async () => {
+    const { driver, world } = await mount();
+    driver.ownerTools = true;
 
     await toolHandler(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
-    expect(driver.toolCalls[0]?.actor).toEqual({ kind: 'owner', id: '100000001' });
+    expect(driver.toolCalls[0]?.actor).toEqual({ kind: 'desktop' });
   });
 });
 
 describe('会话参数：数字 conv_id 与失败回执', () => {
   async function twoConvs() {
-    const mounted = await mount({ mode: 'all', ownerId: '999' });
+    const mounted = await mount({ mode: 'all' });
     const { driver, host } = mounted;
+    driver.desktopSend = true;
     driver.emitMessage({
       ...groupMsg({ id: 'g1', text: '甲群说话' }),
       umo: 'default:GroupMessage:111',
@@ -1871,8 +1872,9 @@ describe('历史与提示词（W-006 / W-015 / W-016）', () => {
     const prompt = readFileSync(new URL('../src/ENV_PROMPT.md', import.meta.url), 'utf8');
     expect(prompt).not.toContain('调不了这些工具');
     expect(prompt).not.toContain('要发到别处再显式');
-    expect(prompt).toContain('主人 QQ');
-    expect(prompt).toContain('不要假装成功');
+    expect(prompt).toContain('AstrBot 管理页已授权的主人身份');
+    expect(prompt).toContain('按回执说明结果');
+    expect(prompt).not.toContain('独立工具令牌');
 
     expect(CALL_TOOL_DECL.description).toContain('configured AstrBot owner');
     expect(CALL_TOOL_DECL.description).toContain('separate tool token');
@@ -1900,8 +1902,8 @@ const OWNER_PRIVATE = {
 
 /** 桥见过主人的私聊和一个群，然后结束 QQ 轮次，进入非 QQ 轮次。 */
 async function seenBridge(patch: Partial<AstrbotConfigSection> = {}) {
-  const mounted = await mount({ mode: 'all', ownerId: OWNER, ...patch });
-  mounted.driver.ownerIds = [OWNER];
+  const mounted = await mount({ mode: 'all', ...patch });
+  mounted.driver.desktopSend = true;
   mounted.driver.emitMessage({
     id: 'p1', umo: OWNER_PRIVATE.umo, conv: OWNER_PRIVATE,
     sender: { id: OWNER, name: '主人' }, text: '在吗', mentioned: true, owner: true,
@@ -2000,15 +2002,15 @@ describe('主动发送与 @', () => {
     expect(typeof out === 'string' ? out : out.text).toContain('语音和 @ 不能');
   });
 
-  it('主人 QQ 不在管理员名单时拒绝', async () => {
+  it('AstrBot 未开放桌面主动发送时拒绝', async () => {
     const { driver, world } = await seenBridge();
-    driver.ownerIds = ['999999'];
+    driver.desktopSend = false;
     const out = await toolHandler(world, 'astrbot_send_message')(
       { text: '你好', conv_kind: 'group', conv_id: '123456' },
       toolCtx(),
     );
     expect(driver.sent).toHaveLength(0);
-    expect(typeof out === 'string' ? out : out.text).toContain('不在 AstrBot 的管理员名单');
+    expect(typeof out === 'string' ? out : out.text).toContain('请在 AstrBot 管理页授权');
   });
 
   it('桥没见过的会话不发', async () => {
@@ -2022,8 +2024,8 @@ describe('主动发送与 @', () => {
   });
 
   it('重启后由桥恢复的会话，可以直接主动发送', async () => {
-    const { driver, world } = await mount({ mode: 'all', ownerId: OWNER });
-    driver.ownerIds = [OWNER];
+    const { driver, world } = await mount({ mode: 'all' });
+    driver.desktopSend = true;
     driver.emitReady([OWNER_PRIVATE, SEEN_GROUP]);
     await toolHandler(world, 'astrbot_send_message')(
       { text: '我回来了', conv_kind: 'private', conv_id: OWNER },

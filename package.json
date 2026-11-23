@@ -42,11 +42,11 @@
     "locales": {
       "zh": {
         "displayName": "AstrBot · QQ",
-        "description": "让 Coo 接入 AstrBot 上的 QQ 群聊和私聊。AstrBot 管理账号、接管范围和插件，Coo 使用当前模型回复。支持引用、合并转发、图片、按需读取 QQ 语音原文件及语音回复。\n\n完整模式使用 Coo 主对话，QQ 回复可能引用控制台里的内容。安全模式隔离 QQ 会话，需要宿主提供独立轮次接口。\n\n请在 AstrBot 4.29.1 或更新版本安装同版本的配套桥插件。主人权限调用工具需要另行授权。交流 QQ 群 1136066256。"
+        "description": "让 QQ 群聊和私聊接入 Coo 主会话，沿用当前人格和模型。支持引用、合并转发、图片、按需读取 QQ 语音原件及语音回复。\n\n安全模式只开放指定主人的 QQ 私聊。完整模式可开放指定会话、AstrBot 工具和机器人主动发送，QQ 回复可能提到 Coo 桌面对话。\n\n需要 AstrBot 4.29.1 或更新版本和同版本配套桥。跨机支持 WS 和 WSS，使用一枚桥接令牌。交流 QQ 群 1136066256。"
       }
     },
     "describe": "describe.json",
-    "webUiClient": "dist/webui-09517eced7cc.js",
+    "webUiClient": "dist/webui-af54c227130f.js",
     "webUiStyle": "dist/webui-3ca350a42266.css"
   },
   "files": [
