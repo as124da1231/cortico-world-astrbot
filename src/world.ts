@@ -177,7 +177,10 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        text: { type: 'string', description: 'Message text to send. Plain text only.' },
+        text: {
+          type: 'string',
+          description: 'Text for the QQ recipient. Keep desktop-pet performance cues such as 【shy】 or <dance> in desktop-pet tool calls. Quote them literally if the conversation is about the markup itself.',
+        },
         voice: {
           type: 'boolean',
           description:
