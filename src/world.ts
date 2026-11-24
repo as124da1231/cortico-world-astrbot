@@ -35,6 +35,7 @@ import { describeSegment, imageAttachmentIndex, needsBridge, parseSegments, rend
 import { EXTENSION_VERSION } from './version.ts';
 
 const ENV_PROMPT_FILE = fileURLToPath(new URL('./ENV_PROMPT.md', import.meta.url));
+const QQ_EXTERNAL_DATA_HEADER = '【AstrBot 桥 · QQ 外部资料】';
 
 type QqEvent = Parameters<WorldHost['pushEvent']>[0];
 
@@ -1121,8 +1122,9 @@ export class AstrbotWorld implements World {
           return { text: `工具 ${name} 没有执行：${reason}${code}`, failed: true };
         }
         const text = res.result?.trim() ? res.result : `工具 ${name} 执行完了，没有返回文字。`;
-        const blobs = name === 'cortico_read_message_component' ? componentBlobs(res) : [];
-        return this.externalRead(ctx, text, this.turnConv, blobs);
+        const qqMaterial = name === 'cortico_read_message_component';
+        const blobs = qqMaterial ? componentBlobs(res) : [];
+        return this.externalRead(ctx, text, this.turnConv, blobs, qqMaterial ? 'qq' : 'astrbot-tool');
       },
     };
   }
@@ -1367,16 +1369,21 @@ export class AstrbotWorld implements World {
       && (!turn || (this.qqTurnActive() && this.turnMsgId === turn && this.turnConv?.umo === conv.umo));
   }
 
-  private async externalRead(ctx: ToolCallContext, text: string, conv?: Conv, blobs: BlobInput[] = []) {
-    if (!this.host || !ctx.queueExternalEvents || !this.driver?.modeRevision) {
-      return blobs.length ? { text, blobs } : text;
-    }
-    const record = await this.host.pushEvent({
+  private async externalRead(
+    ctx: ToolCallContext, text: string, conv?: Conv, blobs: BlobInput[] = [],
+    kind: 'qq' | 'astrbot-tool' = 'qq',
+  ) {
+    const data: QqEvent = {
       source: this.id, origin: 'external', type: 'astrbot.read_result',
       ts: nowIso(this.opts.timezone), text, blobs, meta: conv ? { umo: conv.umo } : undefined,
-    }, { deliver: false });
-    ctx.queueExternalEvents([record]);
-    return '已读取，内容见随本次调用返回的 QQ 外部资料。';
+    };
+    if (this.host && ctx.queueExternalEvents && (kind === 'qq' || this.driver?.modeRevision)) {
+      const record = await this.host.pushEvent(data, { deliver: false });
+      ctx.queueExternalEvents([record]);
+      return '已读取，内容见随本次调用返回的 QQ 外部资料。';
+    }
+    const reply = kind === 'qq' ? `${QQ_EXTERNAL_DATA_HEADER}\n${text}` : text;
+    return blobs.length ? { text: reply, blobs } : reply;
   }
 
   private historyTool(): ToolDef {
@@ -1405,9 +1412,8 @@ export class AstrbotWorld implements World {
           ? renderSearch(host.store, conv, keyword, limit, context, sender || undefined)
           : renderLatest(host.store, conv, limit, sender || undefined);
 
-        if (text) return this.externalRead(ctx, text, conv);
         const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
-        return `${where}里没有找到符合条件的消息。`;
+        return this.externalRead(ctx, text || `${where}里没有找到符合条件的消息。`, conv);
       },
     };
   }

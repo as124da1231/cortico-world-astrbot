@@ -852,6 +852,7 @@ describe('历史检索', () => {
 
     settle(world, host);
     const text = textOf(await handlerOf(world, 'astrbot_read_history')({}, toolCtx()));
+    expect(text.split('\n')[0]).toBe('【AstrBot 桥 · QQ 外部资料】');
     expect(text.indexOf('第一句')).toBeLessThan(text.indexOf('第二句'));
   });
 
@@ -1018,7 +1019,8 @@ describe('QQ 组件入口', () => {
     settle(world, host);
     const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
     expect(host.events[0]?.text).toContain('[引用 · 组件 1] 旧作者 引用正文 正文 [文件 · 组件 3]');
-    expect(await handler({ message_id: 'm1', path: [1, 1] }, toolCtx())).toBe('引用正文');
+    expect(await handler({ message_id: 'm1', path: [1, 1] }, toolCtx()))
+      .toBe('【AstrBot 桥 · QQ 外部资料】\n引用正文');
     expect(await handler({ message_id: 'm1', path: [3] }, toolCtx())).toContain('示例.zip');
     expect(driver.toolCalls).toHaveLength(0);
   });
@@ -1029,14 +1031,17 @@ describe('QQ 组件入口', () => {
     driver.toolResult = { ok: true, result: '转发中的原文' };
     settle(world, host);
     const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
-    expect(await handler({ message_id: 'm1', path: [1], offset: 8 }, toolCtx())).toBe('转发中的原文');
+    expect(await handler({ message_id: 'm1', path: [1], offset: 8 }, toolCtx()))
+      .toBe('【AstrBot 桥 · QQ 外部资料】\n转发中的原文');
     expect(driver.toolCalls[0]).toMatchObject({
       name: 'cortico_read_message_component',
       args: { message_id: 'm1', path: [1], offset: 8 },
       turn: 'm1',
     });
-    expect(await handler({ message_id: 'm1', path: [1], conv_id: 'other' }, toolCtx()))
+    const queueExternalEvents = vi.fn();
+    expect(await handler({ message_id: 'm1', path: [1], conv_id: 'other' }, { ...toolCtx(), queueExternalEvents }))
       .toMatchObject({ failed: true });
+    expect(queueExternalEvents).not.toHaveBeenCalled();
     expect(driver.toolCalls).toHaveLength(1);
   });
 
@@ -1050,10 +1055,41 @@ describe('QQ 组件入口', () => {
     settle(world, host);
     const handler = world.tools().find((tool) => tool.name === 'astrbot_read_message_component')!.handler;
     expect(await handler({ message_id: 'm1', path: [1, 1] }, toolCtx())).toMatchObject({
-      text: '转发原图', blobs: [{ mime: 'image/png', bytes: new Uint8Array([1, 2, 3]) }],
+      text: '【AstrBot 桥 · QQ 外部资料】\n转发原图',
+      blobs: [{ mime: 'image/png', bytes: new Uint8Array([1, 2, 3]) }],
     });
     expect(await handler({ message_id: 'm1', path: [1, 2] }, toolCtx())).toContain('资料信息');
     expect(driver.toolCalls).toHaveLength(1);
+  });
+
+  it('宿主支持外部投递时把获准的历史、转发正文和附件作为外部事件', async () => {
+    const { driver, host, world } = await mount();
+    const umo = 'default:GroupMessage:123456';
+    driver.emitMessage(groupMsg({
+      umo, segments: [
+        { type: 'forward', fields: { id: 'forward' } },
+        { type: 'plain', fields: { text: '历史正文' } },
+      ],
+    }));
+    driver.toolResult = { ok: true, result: '转发正文', images: [{ mime: 'image/png', base64: 'AQID' }] };
+    settle(world, host);
+    const queueExternalEvents = vi.fn();
+    const ctx = { ...toolCtx(), queueExternalEvents };
+
+    const history = await toolHandler(world, 'astrbot_read_history')({}, ctx);
+    const forward = await toolHandler(world, 'astrbot_read_message_component')({ message_id: 'm1', path: [1] }, ctx);
+
+    expect(history).toBe('已读取，内容见随本次调用返回的 QQ 外部资料。');
+    expect(forward).toBe(history);
+    expect(queueExternalEvents).toHaveBeenNthCalledWith(1, [expect.objectContaining({
+      type: 'astrbot.read_result', origin: 'external', source: 'astrbot',
+      text: expect.stringContaining('历史正文'), meta: { umo },
+    })]);
+    expect(queueExternalEvents).toHaveBeenNthCalledWith(2, [expect.objectContaining({
+      type: 'astrbot.read_result', origin: 'external', source: 'astrbot', text: '转发正文', meta: { umo },
+      blobs: [expect.objectContaining({ mime: 'image/png', bytes: new Uint8Array([1, 2, 3]) })],
+    })]);
+    expect(host.pushOpts.slice(-2)).toEqual([{ deliver: false }, { deliver: false }]);
   });
 });
 
