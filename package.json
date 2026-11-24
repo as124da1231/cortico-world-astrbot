@@ -1,6 +1,6 @@
 {
   "name": "cortico-world-astrbot",
-  "version": "1.3.9",
+  "version": "1.3.10",
   "type": "module",
   "description": "通过 AstrBot 把 QQ 群聊和私聊接到 Coo，支持引用、合并转发、图片、语音和经授权的 AstrBot 工具。交流 QQ 群 1136066256。",
   "license": "MIT",
@@ -42,7 +42,7 @@
     "locales": {
       "zh": {
         "displayName": "AstrBot · QQ",
-        "description": "让 QQ 群聊和私聊接入 Coo 主会话，沿用当前人格和模型。支持引用、合并转发、图片、按需读取 QQ 语音原件及语音回复。\n\n安全模式只开放指定主人的 QQ 私聊。完整模式可开放指定会话、AstrBot 工具和机器人主动发送，QQ 回复可能提到 Coo 桌面对话。\n\n需要 AstrBot 4.29.1 或更新版本和同版本配套桥。跨机支持 WS 和 WSS，使用一枚桥接令牌。交流 QQ 群 1136066256。"
+        "description": "让 QQ 群聊和私聊接入 Coo 主会话，沿用当前人格和模型。支持引用、合并转发、图片、按需读取 QQ 语音原件及语音回复。\n\n安全模式只开放指定主人的 QQ 私聊。完整模式可开放指定会话、AstrBot 工具和机器人主动发送，QQ 回复可能提到 Coo 桌面对话。\n\n配套使用 AstrBot 桥插件 1.3.9（AstrBot 4.29.1 或更新版本）。跨机支持 WS 和 WSS，使用一枚桥接令牌。交流 QQ 群 1136066256。"
       }
     },
     "describe": "describe.json",
