@@ -171,7 +171,7 @@ describe('装配', () => {
       { name: 'play_song_by_name' },
     ];
     const ui = world.webUi();
-    expect(ui.panels?.map((p) => p.id)).toEqual(['connection']);
+    expect(ui.panels?.map((p) => p.id)).toEqual(['connection', 'platforms']);
     const st = (await ui.invoke?.('connection', 'state', [])) as Record<string, unknown>;
     expect(st.enabled).toBe(true);
     expect(st.connected).toBe(true);
@@ -182,6 +182,19 @@ describe('装配', () => {
     expect(st.tts).toEqual({ ready: true, provider: 'edge_tts' });
     expect(st).not.toHaveProperty('groups');
     expect(st).not.toHaveProperty('privateMode');
+
+    const routes = [
+      { id: 'qq-test', channel: 'qq', enabled: true, ownerBound: true },
+      { id: 'discord-test', channel: 'discord', enabled: false, ownerBound: false },
+    ];
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: true, platformRoutes: null });
+    Object.assign(driver, { platformRoutes: [] });
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: true, platformRoutes: [] });
+    Object.assign(driver, { platformRoutes: routes });
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: true, platformRoutes: routes });
+    await expect(ui.invoke?.('platforms', 'reconnect', [])).rejects.toThrow('没有这个方法');
+    driver.emitState(false);
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: false, platformRoutes: null });
   });
 
   it('桥接令牌可在连接页更新和清除，状态和通用配置不返回令牌', async () => {
@@ -211,16 +224,16 @@ describe('装配', () => {
 });
 
 describe('版本显示', () => {
-  it('WebUI 角标和状态工具都带上包版本', async () => {
+  it('连接面板右上角和状态工具使用同一个包版本', async () => {
     const { world } = await mount({ mode: 'all' });
-    const badge = world.webUi().badges?.find((b) => b.label === '版本');
-    expect(badge?.value).toMatch(/^\d+\.\d+\.\d+/);
+    const state = await world.webUi().invoke?.('connection', 'state', []) as { version: string };
+    expect(state.version).toMatch(/^\d+\.\d+\.\d+/);
 
     const status = world.tools().find((t) => t.name === 'astrbot_status');
     if (!status) throw new Error('没有状态工具');
     const out = await status.handler({}, toolCtx());
     const text = typeof out === 'string' ? out : out.text;
-    expect(text).toContain(`版本：${badge?.value}`);
+    expect(text).toContain(`版本：${state.version}`);
   });
 });
 
@@ -1587,7 +1600,8 @@ describe('QQ 扩展不接管本地回复出口', () => {
       expect(text).not.toContain('就优先回 QQ');
       expect(text).not.toContain('先回 QQ');
     }
-    expect(prompt).toContain('非 QQ 消息沿用来源 World 的规则与回复工具');
+    expect(prompt).toContain('Coo 对话页、桌宠气泡、控制台和其他 World 沿用各自的回复方式');
+    expect(prompt).toContain('【Discord 频道 …】');
   });
 
   it('只按本包事件判定：其他 World 的事件不会建立或延长 QQ 轮次', async () => {
@@ -2087,3 +2101,62 @@ describe('主动发送与 @', () => {
 });
 
 
+
+
+describe('Discord UMO', () => {
+  it('keeps the user ID separate from the DM route and rejects a conflicting frame', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    const umo = 'discord-test:FriendMessage:600';
+    const frame = {
+      t: 'msg', channel: 'discord', umo, conv: { kind: 'private', id: '600' },
+      sender: { id: '111', name: '主人' }, text: '来自 Discord 主人', id: '867', owner: true,
+    };
+    expect(parseMessage({ ...frame, umo: '' })).toBeNull();
+    driver.emitMessage(parseMessage({ ...frame, conv: { kind: 'private', id: '111' } })!);
+    expect(host.events).toHaveLength(0);
+    driver.emitMessage(parseMessage(frame)!);
+    await Promise.resolve();
+    settle(world, host);
+
+    expect(host.events[0]).toMatchObject({
+      origin: 'external', senderKey: 'discord-test:111',
+      meta: { channel: 'discord', umo, platformSenderId: '111' },
+    });
+    expect(host.events[0]?.text).toContain('【Discord 私聊');
+    await toolHandler(world, 'astrbot_send_message')({ text: '收到' }, toolCtx());
+    expect(driver.sent).toMatchObject([{ conv: { kind: 'private', id: '600', umo }, text: '收到' }]);
+  });
+
+  it('keeps history separate even when Discord and QQ have the same session ID', async () => {
+    const { driver, host, world } = await mount({ mode: 'all' });
+    driver.emitMessage(groupMsg({ id: '900', text: 'QQ 独有的内容' }));
+    await Promise.resolve();
+    settle(world, host);
+    world.onTurnEnded();
+
+    const umo = 'discord-test:GroupMessage:123456';
+    const memberId = '1242792742786113994';
+    driver.emitMessage(parseMessage({
+      t: 'msg', channel: 'discord', id: '900', umo, conv: { kind: 'group', id: '123456' },
+      sender: { id: memberId }, text: 'Discord 独有的内容', mentioned: true,
+    })!);
+    await Promise.resolve();
+    deliverForCore(world, host, host.events.slice(-1));
+
+    const read = toolHandler(world, 'astrbot_read_history');
+    const output = await read({ sender: memberId, limit: 5 }, toolCtx());
+    expect(output).toEqual(expect.stringContaining('【AstrBot 桥 · Discord 外部资料】'));
+    expect(output).toEqual(expect.stringContaining('Discord 独有的内容'));
+    expect(output).not.toEqual(expect.stringContaining('QQ 独有的内容'));
+    const denied = await read({ conv_id: 'default:GroupMessage:123456' }, toolCtx());
+    expect(denied).toMatchObject({ failed: true });
+
+    const send = toolHandler(world, 'astrbot_send_message');
+    await send({ text: '收到', at: ['all'] }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    await send({ text: '收到', at: [Number(memberId)] }, toolCtx());
+    expect(driver.sent).toHaveLength(0);
+    await send({ text: '收到', at: [memberId], reply_to: '900' }, toolCtx());
+    expect(driver.sent).toMatchObject([{ conv: { umo }, at: [memberId], replyTo: '900' }]);
+  });
+});

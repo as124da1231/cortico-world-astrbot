@@ -6,10 +6,12 @@
 import type { WebUiClientBundle } from 'cortico/web/shared/client-panel.ts';
 import './style.css';
 import { connectionPanel } from './connection.ts';
+import { platformsPanel } from './platforms.ts';
 
 const bundle: WebUiClientBundle = {
   panels: {
     connection: connectionPanel,
+    platforms: platformsPanel,
   },
 };
 

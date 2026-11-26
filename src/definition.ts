@@ -21,32 +21,32 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
   describe: {
     tools: describeTools([...ASTRBOT_TOOL_DECLS, CALL_TOOL_DECL], {
       astrbot_send_message: {
-        zh: '经 AstrBot 的桥往一个 QQ 会话发一条消息：文字、图片，或两者一起。图片用 pet_cua_screenshot 回执里的 log: 句柄。',
-        en: 'Sends text, an image, or both into a QQ conversation through the AstrBot bridge. Images use the log: handle from a pet_cua_screenshot receipt.',
+        zh: '经 AstrBot 回复 QQ 或 Discord 会话。已授权的 QQ 截图使用 pet_cua_screenshot 回执的 log: 句柄。',
+        en: 'Replies to a QQ or Discord conversation through AstrBot. Authorized QQ screenshots use the log: handle from a pet_cua_screenshot receipt.',
       },
       astrbot_status: {
-        zh: '报告桥的连接状态、桥自报的身份与本次见过的 QQ 会话。',
-        en: 'Reports bridge connection state, the reported bot identity and the QQ conversations seen this session.',
+        zh: '报告桥的连接状态、桥自报的身份与本次见过的 AstrBot 会话。',
+        en: 'Reports bridge connection state, the reported bot identity and the AstrBot conversations seen this session.',
       },
       astrbot_read_history: {
-        zh: '读或搜这个 bot 见过的 QQ 消息：某会话最近的若干条，或含关键词的那些。',
-        en: 'Reads or searches the QQ messages this bot has seen: the latest in a conversation, or those containing a keyword.',
+        zh: '读或搜这个 bot 见过的 AstrBot 消息：某会话最近的若干条，或含关键词的那些。',
+        en: 'Reads or searches the AstrBot messages this bot has seen: the latest in a conversation, or those containing a keyword.',
       },
       astrbot_read_message_component: {
-        zh: '查看已收到的 QQ 消息中的引用、合并转发与其他组件详情。',
-        en: 'Reads quoted messages, merged forwards and other details of components in observed QQ messages.',
+        zh: '查看已收到的 AstrBot 消息中的引用、合并转发与其他组件详情。',
+        en: 'Reads quoted messages, merged forwards and other details of components in observed AstrBot messages.',
       },
       astrbot_call_tool: {
-        zh: '调用 AstrBot 已授权的工具。QQ 轮次使用发言者身份，Coo 对话需要单独授权的主人身份。',
-        en: 'Calls an authorized AstrBot tool as the QQ sender or, in Coo chat, as the separately authorized owner.',
+        zh: '调用 AstrBot 已授权的工具。平台轮次使用发言者身份，Coo 对话需要单独授权的主人身份。',
+        en: 'Calls an authorized AstrBot tool as the platform sender or, in Coo chat, as the separately authorized owner.',
       },
     }),
     events: [
       {
         type: 'astrbot.message',
         description: {
-          zh: '桥送来的 QQ 消息；被点名时立即投递，其余按配置合批。',
-          en: 'A QQ message from the bridge; delivered at once when the bot is called, otherwise batched per config.',
+          zh: '桥接收到的 QQ 或 Discord 消息。',
+          en: 'A QQ or Discord message received through the bridge.',
         },
       },
       {
@@ -66,7 +66,7 @@ export const ASTRBOT: WorldDefinition<AstrbotConfigSection> = {
       },
       {
         type: 'astrbot.read_result',
-        description: { zh: 'Coo 主动读取的 QQ 外部资料。', en: 'External QQ content explicitly fetched by Coo.' },
+        description: { zh: 'Coo 主动读取的外部平台资料。', en: 'External platform content explicitly fetched by Coo.' },
       },
     ],
   },

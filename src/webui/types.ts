@@ -1,8 +1,16 @@
 /** 「连接」面板的状态；只包含 World 自己的连接信息。 */
 
-export interface ConnectionState {
+import type { PlatformRoute } from '../driver.ts';
+
+export interface PlatformState {
   enabled: boolean;
   connected: boolean;
+  /** null 表示桥未上报明细；空数组表示桥已上报且没有实例。 */
+  platformRoutes: PlatformRoute[] | null;
+}
+
+export interface ConnectionState extends PlatformState {
+  version?: string;
   mode?: 'full' | 'safe';
   modeKnown: boolean;
   modeSynced: boolean;

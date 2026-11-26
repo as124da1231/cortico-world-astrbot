@@ -25,8 +25,18 @@ export interface Conv {
   umo?: string;
   kind: ConvKind;
   id: string;
+  channel?: BridgeChannel;
   /** 群名或对方昵称，仅用于展示。 */
   name?: string;
+}
+
+export type BridgeChannel = 'qq' | 'discord';
+
+export interface PlatformRoute {
+  id: string;
+  channel: BridgeChannel;
+  enabled: boolean;
+  ownerBound: boolean;
 }
 
 /** 桥推进来的一条消息。字段保持扁平，语义由 World 解释。 */
@@ -44,8 +54,7 @@ export interface BridgeMessage {
   convMismatch?: boolean;
   /** ISO 8601；缺失时由 World 补当前时间。 */
   ts?: string;
-  /** 渠道。当前桥只有 QQ；字段与官方 QQ World 的 meta.channel 对齐。 */
-  channel?: 'qq';
+  channel?: BridgeChannel;
   conv: Conv;
   sender?: { id?: string; name?: string };
   text: string;
@@ -158,6 +167,7 @@ export interface BridgeDriver {
   readonly ownerTools?: boolean;
   readonly desktopSend?: boolean;
   readonly ownerBound?: boolean;
+  readonly platformRoutes?: PlatformRoute[];
   readonly modeApprovalPending?: boolean;
   readonly connectionError?: string;
   /** 桥自报的语音能力；没收到时按不可用。 */
@@ -289,6 +299,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   ownerTools = false;
   desktopSend = false;
   ownerBound = false;
+  platformRoutes?: PlatformRoute[];
   modeApprovalPending = false;
   private modeOffer?: { mode: BridgeMode; revision: string };
   connectionError?: string;
@@ -515,6 +526,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     this.ownerTools = false;
     this.desktopSend = false;
     this.ownerBound = false;
+    this.platformRoutes = undefined;
     this.modeOffer = undefined;
     let ws: WebSocket;
     try {
@@ -825,6 +837,11 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       this.ownerTools = frame.ownerTools === true;
       this.desktopSend = frame.desktopSend === true;
       this.ownerBound = frame.ownerBound === true;
+      this.platformRoutes = Array.isArray(frame.platformRoutes)
+        ? frame.platformRoutes.filter((entry): entry is PlatformRoute =>
+          entry && typeof entry.id === 'string' && (entry.channel === 'qq' || entry.channel === 'discord') &&
+          typeof entry.enabled === 'boolean' && typeof entry.ownerBound === 'boolean')
+        : undefined;
       this.modeApprovalPending = frame.modeApprovalPending === true;
       const self = frame.self as { id?: unknown; name?: unknown } | undefined;
       this.self = {
@@ -863,7 +880,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
           const umo = typeof r.umo === 'string' ? r.umo.trim() : '';
           if (!kind || !id || !umo) continue;
           const name = typeof r.name === 'string' && r.name.trim() ? r.name.trim() : undefined;
-          convs.push({ kind, id, umo, ...(name ? { name } : {}) });
+          convs.push({ kind, id, umo, ...(name ? { name } : {}), ...(r.channel === 'discord' ? { channel: 'discord' } : {}) });
         }
       }
       for (const cb of this.readyCbs) cb(convs);
@@ -1021,6 +1038,9 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
   const umoRaw = typeof frame.umo === 'string' ? frame.umo : convRaw?.umo;
   const umo = typeof umoRaw === 'string' && umoRaw.trim() !== '' ? umoRaw.trim() : undefined;
   const parsed = umo ? parseUmo(umo) : null;
+  const channel = frame.channel;
+  if (channel !== undefined && channel !== 'qq' && channel !== 'discord') return null;
+  if (channel === 'discord' && !parsed) return null;
   // 非法 UMO 不能把整条帧（尤其是撤回/入群通知）丢掉：退回 conv 记账，上层打 warn。
   const umoInvalid = Boolean(umo && !parsed);
   const safeUmo = parsed ? parsed.raw : undefined;
@@ -1051,11 +1071,12 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
     ...(umoInvalid ? { umoInvalid: true } : {}),
     ...(convMismatch ? { convMismatch: true } : {}),
     ts: typeof frame.ts === 'string' ? frame.ts : undefined,
-    channel: frame.channel === 'qq' ? 'qq' : undefined,
+    channel,
     conv: {
       ...(safeUmo ? { umo: safeUmo } : {}),
       kind,
       id,
+      ...(channel === 'discord' ? { channel } : {}),
       name: typeof convRaw?.name === 'string' ? convRaw.name : undefined,
     },
     sender: senderRaw

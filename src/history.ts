@@ -29,6 +29,7 @@ export function convOfEvent(e: EventEnvelope): Conv | undefined {
     ...(umo ? { umo } : {}),
     kind,
     id: String(raw.id ?? ''),
+    ...(e.meta?.channel === 'discord' ? { channel: 'discord' as const } : {}),
     name: raw.name === undefined ? undefined : String(raw.name),
   };
 }
@@ -37,7 +38,7 @@ function inConv(e: EventEnvelope, conv: Conv): boolean {
   const c = convOfEvent(e);
   if (!c) return false;
   if (conv.umo) return c.umo === conv.umo;
-  return c.kind === conv.kind && c.id === conv.id;
+  return c.channel !== 'discord' && c.kind === conv.kind && c.id === conv.id;
 }
 
 const BASE: EventRangeQuery = { source: 'astrbot', origin: 'external' };
@@ -82,7 +83,7 @@ export function readLatest(
     for (let i = page.length - 1; i >= 0 && picked.length < limit; i--) {
       const e = page[i]!;
       if (!inConv(e, conv)) continue;
-      if (sender && String(e.senderKey ?? '') !== sender) continue;
+      if (sender && String(e.meta?.platformSenderId ?? e.senderKey ?? '') !== sender) continue;
       picked.push(e);
     }
     if (page.length < limit) break;
@@ -127,7 +128,7 @@ export function search(
     for (let i = page.length - 1; i >= 0 && hits.length < limit; i--) {
       const e = page[i]!;
       if (!inConv(e, conv)) continue;
-      if (sender && String(e.senderKey ?? '') !== sender) continue;
+      if (sender && String(e.meta?.platformSenderId ?? e.senderKey ?? '') !== sender) continue;
       if (!String(e.text ?? '').toLowerCase().includes(needle)) continue;
       hits.push(e);
     }

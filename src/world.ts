@@ -115,7 +115,7 @@ function parseMentions(
   allowAll: boolean,
 ): { ok: true; list: string[] } | { ok: false; reason: string } {
   if (raw === undefined || raw === null) return { ok: true, list: [] };
-  if (!Array.isArray(raw)) return { ok: false, reason: 'at 必须是 QQ 号数组，未发送。' };
+  if (!Array.isArray(raw)) return { ok: false, reason: 'at 必须是平台用户 ID 数组，未发送。' };
   if (raw.length === 0) return { ok: true, list: [] };
   if (raw.length > MENTIONS_MAX) {
     return { ok: false, reason: `一条消息最多 @ ${MENTIONS_MAX} 人，未发送。` };
@@ -123,7 +123,10 @@ function parseMentions(
   const list: string[] = [];
   for (const item of raw) {
     if (typeof item !== 'string' && typeof item !== 'number') {
-      return { ok: false, reason: 'at 里只能是 QQ 号或 "all"，未发送。' };
+      return { ok: false, reason: 'at 里只能是平台用户 ID 或 "all"，未发送。' };
+    }
+    if (typeof item === 'number' && !Number.isSafeInteger(item)) {
+      return { ok: false, reason: '长数字用户 ID 请用字符串填写，未发送。' };
     }
     const value = String(item).trim();
     if (value === 'all') {
@@ -134,7 +137,7 @@ function parseMentions(
       continue;
     }
     if (!/^\d{5,20}$/.test(value)) {
-      return { ok: false, reason: `「${value}」不是 QQ 号，at 只接受数字，未发送。` };
+      return { ok: false, reason: `「${value}」不是有效用户 ID，at 只接受数字，未发送。` };
     }
     list.push(value);
   }
@@ -161,16 +164,15 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'astrbot_send_message',
     description:
-      'Send a message into a QQ conversation through the AstrBot bridge. This is the ONLY ' +
-      'way to speak on QQ: lines starting with 【QQ群 …】 or 【QQ私聊 …】 are QQ messages and ' +
-      'can be answered with this tool. This tool only controls QQ delivery; it does not ' +
-      'select or replace the reply tools of local chat, desktop pets, or other Worlds. ' +
-      'In a QQ turn you may omit conv_id to reply where that turn came from. Outside a QQ turn ' +
-      'the owner (the admin QQ set on the connection page) may send on purpose, but only with ' +
+      'Send a message into an authorized QQ or Discord conversation through AstrBot. ' +
+      'Use this tool for messages headed 【QQ群 …】, 【QQ私聊 …】, 【Discord 频道 …】 or 【Discord 私聊 …】. ' +
+      'Local chat, pets and other Worlds keep their own reply tools. ' +
+      'In an AstrBot turn you may omit conv_id to reply to that turn’s conversation. Outside an AstrBot turn ' +
+      'desktop chat may send with a separate AstrBot grant, but only with ' +
       'an explicit conv_id or reply_to, and only to a conversation the bridge has already seen. ' +
       'Text, an image, or both. Set voice=true to speak a short text reply out loud ' +
       '(TTS; falls back to text if the bridge has no TTS). ' +
-      'In a group, at takes QQ numbers to mention (max 10); at=["all"] mentions everyone only ' +
+      'In groups or channels, at takes member IDs on that platform (max 10); at=["all"] is QQ-only and works only ' +
       'when worlds.astrbot.allowAtAll is on in the config (there is no panel toggle yet), ' +
       'and is ignored in private chats.',
     tags: ['speak'],
@@ -180,7 +182,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
       properties: {
         text: {
           type: 'string',
-          description: 'Text for the QQ recipient. Keep desktop-pet performance cues such as 【shy】 or <dance> in desktop-pet tool calls. Quote them literally if the conversation is about the markup itself.',
+          description: 'Text for the chat recipient. Keep desktop-pet performance cues such as 【shy】 or <dance> in desktop-pet tool calls. Quote them literally if the conversation is about the markup itself.',
         },
         voice: {
           type: 'boolean',
@@ -198,11 +200,11 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
         conv_kind: {
           type: 'string',
           enum: ['group', 'private'],
-          description: 'Conversation kind. Defaults to the conversation of this QQ turn.',
+          description: 'Conversation kind. Defaults to the conversation of this AstrBot turn.',
         },
         conv_id: {
           type: 'string',
-          description: 'Group id or user id. Defaults to the conversation of this QQ turn.',
+          description: 'Use the full AstrBot UMO for an explicit destination. Defaults to the current conversation.',
         },
         reply_to: {
           type: 'string',
@@ -213,7 +215,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
           items: { type: 'string' },
           maxItems: 10,
           description:
-            'Group only. QQ numbers to mention, for example ["123456789"]; "all" mentions ' +
+            'Group or channel only. Platform user IDs, for example ["123456789"]; QQ "all" mentions ' +
             'everyone when worlds.astrbot.allowAtAll is on (no panel toggle yet). Ignored in private chats.',
         },
       },
@@ -237,7 +239,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'astrbot_read_history',
     description:
-      'Read the QQ messages this bot has seen: the latest ones in a conversation, or those ' +
+      'Read the AstrBot messages this bot has seen in the authorized QQ or Discord conversation, or those ' +
       'containing a keyword. Use it when someone refers to something said earlier.',
     tags: ['read'],
     parameters: {
@@ -253,9 +255,9 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
           type: 'integer',
           description: 'With keyword: how many messages around each hit, default 2.',
         },
-        sender: { type: 'string', description: 'Only messages from this QQ number.' },
+        sender: { type: 'string', description: 'Only messages from this platform user ID.' },
         conv_kind: { type: 'string', enum: ['group', 'private'], description: 'Defaults to the latest conversation.' },
-        conv_id: { type: 'string', description: 'Group id or user id. Defaults to the latest conversation.' },
+        conv_id: { type: 'string', description: 'Use the full AstrBot UMO for an explicit destination. Defaults to the current conversation.' },
       },
       required: [],
     },
@@ -263,11 +265,11 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'astrbot_read_message_component',
     description:
-      'Read a QQ quote, merged forward, attachment details or another component of an observed message. ' +
-      'Use the message #id and the 1-based component number shown in the QQ message. ' +
+      'Read a quote, attachment or other supported component of an observed AstrBot message. ' +
+      'Use the message #id and the 1-based component number shown on the message. ' +
       'A nested path such as [2,3] selects the third entry of the second component. ' +
       'To retrieve the original QQ voice file, select its exact component and set audio_file to true. ' +
-      'Use the returned offset for more entries. In a QQ turn only the current conversation can be read.',
+      'Use the returned offset for more entries. In an AstrBot turn only the current conversation can be read.',
     tags: ['read'],
     parameters: {
       type: 'object',
@@ -381,18 +383,18 @@ export class AstrbotWorld implements World {
 
     const safe = this.driver?.mode !== 'full';
     const scope = safe
-      ? '仅接入已授权的主人 QQ 私聊。只能回复本轮私聊和读取该私聊资料。'
+      ? '仅接入已授权的主人私聊。只能回复本轮私聊和读取该私聊资料。'
       : '群范围、私聊范围、仅被叫/全部消息、工具权限由 AstrBot 管理。';
 
     const convList =
       safe || this.convs.size === 0
         ? ''
         : [...this.convs.values()]
-            .map((c) => `- ${c.kind === 'group' ? '群' : '私聊'} id=${c.id}`)
+            .map((c) => `- ${c.channel === 'discord' ? 'Discord' : 'QQ'} ${c.kind === 'group' ? '群或频道' : '私聊'} UMO=${c.umo ?? c.id}`)
             .join('\n');
 
     const last = !safe && this.lastConv
-      ? `${this.lastConv.kind === 'group' ? '群' : '私聊'} id=${this.lastConv.id}`
+      ? `${this.lastConv.channel === 'discord' ? 'Discord' : 'QQ'} ${this.lastConv.kind === 'group' ? '群或频道' : '私聊'} UMO=${this.lastConv.umo ?? this.lastConv.id}`
       : '';
 
     const owners = safe ? [] : this.driver?.ownerIds ?? [];
@@ -426,12 +428,20 @@ export class AstrbotWorld implements World {
     return this.driver?.mode === 'full' ? [...chat, this.statusTool(), this.callToolDef()] : chat;
   }
 
+  private platformState() {
+    return {
+      enabled: this.opts.cfg.enabled !== false,
+      connected: this.connected,
+      platformRoutes: this.connected ? this.driver?.platformRoutes ?? null : null,
+    };
+  }
+
   /** 「连接」面板的只读状态；只报 World 自己知道的事，不替 AstrBot 报策略。 */
   private connectionState(): Record<string, unknown> {
     const cfg = this.opts.cfg;
     return {
-      enabled: cfg.enabled !== false,
-      connected: this.connected,
+      ...this.platformState(),
+      version: EXTENSION_VERSION,
       mode: this.driver?.mode,
       modeKnown: !!this.driver?.modeRevision,
       modeSynced: this.connected && !!this.driver?.modeRevision,
@@ -457,18 +467,21 @@ export class AstrbotWorld implements World {
 
   webUi(): WorldWebUiDecl {
     return {
-      ...(EXTENSION_VERSION
-        ? { badges: [{ label: '版本', value: EXTENSION_VERSION, tone: 'plain' as const }] }
-        : {}),
       config: [ASTRBOT_CONFIG_GROUP],
       panels: [
         {
           id: 'connection',
           title: '连接',
-          description: 'World 自己的桥地址、密钥和重连参数；群聊、私聊、工具和语音仍在 AstrBot 配置。',
+          description: '设置 QQ 和 Discord 共用的桥地址、令牌和重连参数，查看桥接状态。',
+        },
+        {
+          id: 'platforms',
+          title: '平台',
+          description: '查看 AstrBot 上报的 QQ、Discord 实例及主人私聊绑定状态。',
         },
       ],
       invoke: async (panel, method, args) => {
+        if (panel === 'platforms' && method === 'state') return this.platformState();
         if (panel === 'connection') {
           if (method === 'state') return this.connectionState();
           if (method === 'save-bridge-token') {
@@ -506,7 +519,7 @@ export class AstrbotWorld implements World {
             { name: 'astrbot.connection', description: '桥的连接状态。' },
             { name: 'astrbot.scope', description: '当前的消息范围与称呼设置。' },
             { name: 'astrbot.self', description: '桥自报的 bot 名字，未连接时为空。' },
-            { name: 'astrbot.owner', description: 'QQ 上哪个人是主人（AstrBot 管理员）。' },
+            { name: 'astrbot.owner', description: '桥上报的 AstrBot 管理员名单。' },
             { name: 'astrbot.conversations', description: '本次会话里见过的 QQ 会话。' },
             { name: 'astrbot.lastConversation', description: '最后一条消息所在的会话。' },
             { name: 'astrbot.tools', description: '桥那边启用的工具清单，没有时说明为空。' },
@@ -530,7 +543,7 @@ export class AstrbotWorld implements World {
         token: cfg.token,
         capabilities: {
           images: this.acceptsImages(host), message_segments: true, component_media: true,
-          component_audio: true, message_delivery_ack: true,
+          component_audio: true, message_delivery_ack: true, multi_platform: true,
         },
         requireModeSync: true,
         acceptMode: mode => this.acceptModeForMountedTools(mode),
@@ -755,7 +768,7 @@ export class AstrbotWorld implements World {
     const convKeys = new Set(
       human
         .map((e) => {
-          const conv = (e.meta as { conv?: Conv } | undefined)?.conv;
+          const conv = convOfEvent(e);
           return conv ? conv.umo || `${conv.kind}:${conv.id}` : '';
         })
         .filter((key) => key !== ''),
@@ -767,13 +780,13 @@ export class AstrbotWorld implements World {
     this.turnChannel = 'qq';
     this.turnChannelAt = Date.now();
     // 会话、消息 id、时间都只从人话取；通知不能当发送目标或工具身份。
-    const meta = lastHuman.meta as { conv?: Conv; message_id?: unknown } | undefined;
-    if (meta?.conv) this.turnConv = meta.conv;
-    this.turnMsgId = String(meta?.message_id ?? '');
+    this.turnConv = convOfEvent(lastHuman);
+    this.turnMsgId = String(lastHuman.meta?.message_id ?? '');
 
     if (first) {
       const c = this.turnConv;
-      this.host?.log.info('本轮渠道：QQ', {
+      this.host?.log.info('本轮 AstrBot 会话', {
+        channel: c?.channel ?? 'qq',
         conv: c ? `${c.kind}:${c.id}` : 'unknown',
         events: human.length,
       });
@@ -870,6 +883,11 @@ export class AstrbotWorld implements World {
     if (!this.opts.cfg.enabled) return;
 
     if (!msg.conv.umo && msg.umo) msg.conv.umo = msg.umo;
+    const channel = msg.channel ?? msg.conv.channel ?? 'qq';
+    if (channel === 'discord') {
+      if (!msg.conv.umo || msg.umoInvalid || msg.convMismatch) return false;
+      msg.conv.channel = channel;
+    }
     if (msg.convMismatch) {
       this.host?.log.warn('AstrBot 帧 UMO 与 conv 不一致，已按 UMO 处理', {
         umo: msg.umo,
@@ -928,11 +946,15 @@ export class AstrbotWorld implements World {
     const isOwner = msg.owner === true;
     // 渠道放在行首，和 qq-final 的【QQ群 …】对齐：不用读上下文就知道这条从哪来。
     const tags: string[] = [];
-    if (senderId) tags.push(`QQ:${senderId}`);
+    const service = channel === 'discord' ? 'Discord' : 'QQ';
+    if (senderId) tags.push(`${service}:${senderId}`);
     if (isOwner && !isNotice) tags.push('主人');
     if (!isPrivate && called) tags.push('@你');
     const clock = this.opts.cfg.includeTime === false ? '' : hhmm(msg.ts);
-    const head = `【${isPrivate ? 'QQ私聊' : `QQ群 ${convName}`}${clock ? ` ${clock}` : ''}】`;
+    const label = channel === 'discord'
+      ? (isPrivate ? 'Discord 私聊' : `Discord 频道 ${convName}`)
+      : (isPrivate ? 'QQ私聊' : `QQ群 ${convName}`);
+    const head = `【${label}${clock ? ` ${clock}` : ''}】`;
     const idPart = msg.id ? `#${msg.id} ` : '';
     const senderTag = tags.length ? `(${tags.join(', ')})` : '';
     // 通知类没有「谁在说话」，只记一条事实；撤回时补上被撤回的原文。
@@ -946,7 +968,7 @@ export class AstrbotWorld implements World {
     const wantsReply = !isNotice && (isPrivate || called || blobs.length > 0);
     const channelHint =
       wantsReply && this.opts.cfg.channelHint !== false
-        ? '\n（回复这条 QQ 消息用 astrbot_send_message；其他界面的消息不会自动转发到 QQ）'
+        ? `\n（回复这条 ${service} 消息用 astrbot_send_message；其他界面的消息不会自动转发到 ${service}）`
         : '';
     const line = isNotice
       ? `${head}${noticeBody}`
@@ -959,10 +981,11 @@ export class AstrbotWorld implements World {
           source: this.id,
           origin: 'external',
           text: line,
-          senderKey: msg.sender?.id ?? senderName,
+          senderKey: channel === 'discord' ? `${msg.conv.umo?.split(':', 1)[0]}:${senderId || senderName}` : msg.sender?.id ?? senderName,
           ...(blobs.length > 0 ? { blobs } : {}),
           meta: {
-            channel: 'qq',
+            channel,
+            ...(channel === 'discord' && senderId ? { platformSenderId: senderId } : {}),
             bridgeGeneration: generation,
             ...(msg.conv.umo || msg.umo ? { umo: msg.conv.umo ?? msg.umo } : {}),
             conv: {
@@ -1085,7 +1108,7 @@ export class AstrbotWorld implements World {
         if (!driver || !driver.connected) {
           return { text: '与 AstrBot 桥的连接未建立，工具没有执行。', failed: true };
         }
-        // QQ 轮次用触发这一轮的人话消息；Coo 对话轮次用「连接」里指定的主人 QQ。
+        // QQ 轮次用触发这一轮的人话消息；Coo 对话轮次用 AstrBot 授权的主人身份。
         // 过期的 QQ 轮次直接拒绝，不借上一条 QQ 消息，也不回退 owner。
         let turn = '';
         let actor: ToolActor | undefined;
@@ -1197,6 +1220,9 @@ export class AstrbotWorld implements World {
           };
         }
 
+        if (conv.channel === 'discord' && Array.isArray(args.at) && args.at.includes('all')) {
+          return { text: 'Discord 频道只允许点名具体成员。', failed: true };
+        }
         const at = parseMentions(args.at, this.opts.cfg.allowAtAll === true);
         if (!at.ok) return { text: at.reason, failed: true };
         if (voice && at.list.length > 0) {
@@ -1235,7 +1261,9 @@ export class AstrbotWorld implements World {
         });
         // 发送本身耗时不该把这一轮挤到过期；开始时就 active 才续期。
         if (qqTurn) this.turnChannelAt = Date.now();
-        const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
+        const where = conv.kind === 'group'
+          ? `${conv.channel === 'discord' ? '频道' : '群'}「${conv.name ?? conv.id}」`
+          : '私聊';
         if (!result.ok) {
           // T-004：桥把中文说明放 note、稳定错误码放 error；优先说人话，code 附在括号里。
           const reason = result.note || result.error || '未知原因';
@@ -1277,7 +1305,7 @@ export class AstrbotWorld implements World {
     if (typeof idArg === 'string') {
       id = idArg.trim();
     } else if (typeof idArg === 'number') {
-      if (!Number.isFinite(idArg)) return { error: 'conv_id 必须是字符串或数字，未发送。' };
+      if (!Number.isSafeInteger(idArg)) return { error: '长数字会话 ID 请用字符串填写。' };
       id = String(idArg);
     } else if (idArg !== undefined && idArg !== null) {
       return { error: 'conv_id 必须是字符串或数字，未发送。' };
@@ -1287,7 +1315,7 @@ export class AstrbotWorld implements World {
     if (bound) {
       if (opts.requireUmo && !bound.umo) return { error: '桥还没见过这个会话（没有 UMO）。' };
       if (id && id !== bound.id && id !== bound.umo || args.conv_kind && args.conv_kind !== bound.kind) {
-        return { error: '只能操作当前 QQ 会话。' };
+        return { error: bound.channel === 'discord' ? '只能操作当前 Discord 会话。' : '只能操作当前 QQ 会话。' };
       }
       return { conv: bound };
     }
@@ -1375,14 +1403,17 @@ export class AstrbotWorld implements World {
   ) {
     const data: QqEvent = {
       source: this.id, origin: 'external', type: 'astrbot.read_result',
-      ts: nowIso(this.opts.timezone), text, blobs, meta: conv ? { umo: conv.umo } : undefined,
+      ts: nowIso(this.opts.timezone), text, blobs,
+      meta: conv ? { umo: conv.umo, ...(conv.channel ? { channel: conv.channel } : {}) } : undefined,
     };
+    const service = conv?.channel === 'discord' ? 'Discord' : 'QQ';
     if (this.host && ctx.queueExternalEvents && (kind === 'qq' || this.driver?.modeRevision)) {
       const record = await this.host.pushEvent(data, { deliver: false });
       ctx.queueExternalEvents([record]);
-      return '已读取，内容见随本次调用返回的 QQ 外部资料。';
+      return `已读取，内容见随本次调用返回的 ${service} 外部资料。`;
     }
-    const reply = kind === 'qq' ? `${QQ_EXTERNAL_DATA_HEADER}\n${text}` : text;
+    const header = service === 'Discord' ? '【AstrBot 桥 · Discord 外部资料】' : QQ_EXTERNAL_DATA_HEADER;
+    const reply = kind === 'qq' ? `${header}\n${text}` : text;
     return blobs.length ? { text: reply, blobs } : reply;
   }
 
@@ -1401,7 +1432,7 @@ export class AstrbotWorld implements World {
         if (!conv) {
           return { text: '没有当前 QQ 会话，请显式指定目标。', failed: true };
         }
-        if (!await this.authorizeRead(conv)) return { text: '该 QQ 会话未获读取授权。', failed: true };
+        if (!await this.authorizeRead(conv)) return { text: '该会话未获读取授权。', failed: true };
 
         const limit = clampInt(args.limit, 20, 1, 100);
         const keyword = typeof args.keyword === 'string' ? args.keyword.trim() : '';
@@ -1412,7 +1443,9 @@ export class AstrbotWorld implements World {
           ? renderSearch(host.store, conv, keyword, limit, context, sender || undefined)
           : renderLatest(host.store, conv, limit, sender || undefined);
 
-        const where = conv.kind === 'group' ? `群「${conv.name ?? conv.id}」` : '私聊';
+        const where = conv.kind === 'group'
+          ? `${conv.channel === 'discord' ? '频道' : '群'}「${conv.name ?? conv.id}」`
+          : '私聊';
         return this.externalRead(ctx, text || `${where}里没有找到符合条件的消息。`, conv);
       },
     };
@@ -1437,7 +1470,7 @@ export class AstrbotWorld implements World {
               this.turnConv.kind !== conv.kind || this.turnConv.id !== conv.id))) {
           return { text: '只可查看当前 QQ 会话中的组件。', failed: true };
         }
-        if (!await this.authorizeRead(conv)) return { text: '该 QQ 会话未获读取授权。', failed: true };
+        if (!await this.authorizeRead(conv)) return { text: '该会话未获读取授权。', failed: true };
         const event = findMessage(host.store, conv, id);
         if (!event) return { text: '这个会话没有这条消息的记录。', failed: true };
         let parts = parseSegments(event.meta?.segments);
@@ -1515,10 +1548,13 @@ export class AstrbotWorld implements World {
         if (EXTENSION_VERSION) lines.push(`版本：${EXTENSION_VERSION}`);
         lines.push(`桥地址：${cfg.wsUrl && !bridgeAddressError(cfg.wsUrl.trim()) ? cfg.wsUrl : '（未配置或不可用）'}`);
         lines.push(`连接：${this.connected ? '已连上' : '未连上'}`);
-        lines.push('渠道：QQ（经 AstrBot 桥）');
+        lines.push(this.driver?.platformRoutes?.some(route => route.channel === 'discord' && route.enabled)
+          ? '渠道：QQ / Discord（经 AstrBot 桥）' : '渠道：QQ（经 AstrBot 桥）');
 
         const convName = (c: Conv): string =>
-          c.kind === 'group' ? `QQ群「${c.name ?? c.id}」` : `QQ私聊「${c.name ?? c.id}」`;
+          c.channel === 'discord'
+            ? `Discord ${c.kind === 'group' ? '频道' : '私聊'}「${c.name ?? c.id}」`
+            : c.kind === 'group' ? `QQ群「${c.name ?? c.id}」` : `QQ私聊「${c.name ?? c.id}」`;
         if (this.lastInbound) {
           const t = hhmm(this.lastInbound.ts);
           lines.push(`最近收到：${convName(this.lastInbound.conv)} ${this.lastInbound.sender}${t ? ` ${t}` : ''}`);
@@ -1532,7 +1568,7 @@ export class AstrbotWorld implements World {
           lines.push(
             '这一轮：没有投递过 QQ 消息（可能是桌宠事件或 Coo 对话）。' +
               '这一轮不是 QQ；要主动发，用 conv_id/reply_to 指定已见过的会话，' +
-              '且需在「连接」里填主人 QQ 并且该号是 AstrBot 管理员。',
+              '并在 AstrBot 桥插件中授权桌面主动发送及目标会话。',
           );
         }
 
@@ -1552,7 +1588,7 @@ export class AstrbotWorld implements World {
         lines.push(`桥自报的身份：${identity}`);
         lines.push('消息范围：由 AstrBot 插件控制。');
         const owners = this.driver?.ownerIds ?? [];
-        lines.push(`主人（AstrBot 管理员）：${owners.length ? owners.join('、') : '（未收到）'}`);
+        lines.push(`AstrBot 管理员：${owners.length ? owners.join('、') : '（未收到）'}`);
         lines.push(
           this.toolList.length
             ? `可用工具（${this.toolList.length}）：${this.toolList.map((t) => t.name).join('、')}`
