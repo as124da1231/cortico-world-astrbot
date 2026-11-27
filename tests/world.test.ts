@@ -187,14 +187,14 @@ describe('装配', () => {
       { id: 'qq-test', channel: 'qq', enabled: true, ownerBound: true },
       { id: 'discord-test', channel: 'discord', enabled: false, ownerBound: false },
     ];
-    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: true, platformRoutes: null });
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ version: st.version, enabled: true, connected: true, platformRoutes: null });
     Object.assign(driver, { platformRoutes: [] });
-    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: true, platformRoutes: [] });
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ version: st.version, enabled: true, connected: true, platformRoutes: [] });
     Object.assign(driver, { platformRoutes: routes });
-    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: true, platformRoutes: routes });
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ version: st.version, enabled: true, connected: true, platformRoutes: routes });
     await expect(ui.invoke?.('platforms', 'reconnect', [])).rejects.toThrow('没有这个方法');
     driver.emitState(false);
-    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ enabled: true, connected: false, platformRoutes: null });
+    expect(await ui.invoke?.('platforms', 'state', [])).toEqual({ version: st.version, enabled: true, connected: false, platformRoutes: null });
   });
 
   it('桥接令牌可在连接页更新和清除，状态和通用配置不返回令牌', async () => {
@@ -1190,8 +1190,8 @@ describe('主人与截图授权', () => {
     const { driver, world } = await mount({ mode: 'all' });
     driver.ownerIds = ['10001', '10002'];
     const identity = world.envPromptVars()['astrbot.owner'];
-    expect(identity).toContain('管理员 QQ 帐号为 10001、10002');
-    expect(identity).toContain('发言者的身份以收到的 QQ 消息为准');
+    expect(identity).toContain('AstrBot 上报的管理员 ID 为 10001、10002');
+    expect(identity).toContain('发言者的身份以当前实例的原生消息为准');
   });
 
   it('桥未提供管理员名单时按实际消息来源描述', async () => {
@@ -1204,7 +1204,7 @@ describe('环境提示词变量', () => {
   it('未连接与已连接给出不同的话', async () => {
     const { world } = await mount({ mode: 'mention', nameAliases: 'Coo' });
     const vars = world.envPromptVars();
-    expect(vars['astrbot.scope']).toContain('由 AstrBot 管理');
+    expect(vars['astrbot.scope']).toContain('发送与工具权限由 AstrBot 校验');
     expect(vars['astrbot.connection']).toContain('已连上');
   });
 
@@ -1383,7 +1383,7 @@ describe('工具桥接', () => {
     const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls).toHaveLength(0);
     const text = typeof out === 'string' ? out : out.text;
-    expect(text).toContain('主人 QQ');
+    expect(text).toContain('对应实例的桌面主人工具');
   });
 
   it('Coo 桌面轮次只声明来源，由 AstrBot 识别主人 QQ', async () => {
@@ -1460,7 +1460,7 @@ describe('工具桥接', () => {
     const out = await handlerOf(world, 'astrbot_call_tool')({ name: 'x' }, toolCtx());
     expect(driver.toolCalls).toHaveLength(0);
     const text = typeof out === 'string' ? out : out.text;
-    expect(text).toContain('主人 QQ');
+    expect(text).toContain('对应实例的桌面主人工具');
   });
 
   it('桥拒绝时把原因带回去', async () => {
@@ -1534,7 +1534,7 @@ describe('工具桥接', () => {
 
     const first = await handlerOf(world, 'astrbot_status')({}, toolCtx());
     let text = typeof first === 'string' ? first : first.text;
-    expect(text).toContain('这一轮：没有投递过 QQ 消息');
+    expect(text).toContain('这一轮没有收到 AstrBot 消息');
     expect(text).toContain('语音：可用（edge_tts）');
 
     driver.emitMessage(groupMsg({ ts: '2026-10-27T18:52:00+08:00' }));

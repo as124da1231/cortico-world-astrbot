@@ -46,14 +46,12 @@
 }
 
 .astrbot-layout > .sheet,
-.astrbot-platform-results > .sheet,
 .astrbot-fields > .fieldrow,
 .astrbot-duo > .fieldrow {
   min-width: 0;
 }
 
-.astrbot-layout > .sheet,
-.astrbot-platform-results > .sheet {
+.astrbot-layout > .sheet {
   margin: 0;
   padding: 0;
   border: 0;
@@ -63,9 +61,16 @@
 .astrbot-connection-summary {
   display: grid;
   gap: 8px;
-  padding: 13px 22px;
+  padding: 14px;
   background: var(--sheet-2);
-  border-bottom: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.astrbot-connection-summary > .sectionhead {
+  padding: 0;
+  margin: 0;
+  border: 0;
 }
 
 .astrbot-connection-line,
@@ -194,43 +199,46 @@
   margin-top: 14px;
 }
 
-.astrbot-platform-toolbar {
-  margin: 0;
-  padding: 10px 22px;
-}
-
-.astrbot-connection-link {
-  text-decoration: none;
-}
-
-.astrbot-platform-overview {
+.astrbot-platform-results { padding: 20px 22px 22px; }
+.astrbot-directory-heading {
   display: flex;
-  align-items: center;
+  align-items: start;
   justify-content: space-between;
+  gap: 8px 16px;
   flex-wrap: wrap;
-  gap: 10px 20px;
-  padding: 16px 22px;
-  border-block: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+.astrbot-directory-heading > .astrbot-description { margin: 0; }
+.astrbot-instance-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  gap: 12px;
+}
+.astrbot-instance-card {
+  display: grid;
+  align-content: start;
+  gap: 13px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
   background: var(--sheet-2);
 }
-
-.astrbot-platform-status {
-  text-align: right;
+.astrbot-instance-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  flex-wrap: wrap;
+  gap: 6px 10px;
 }
-
-.astrbot-platform-results {
-  padding: 20px 22px;
-}
-
-.astrbot-platform-management { margin-top: 12px; }
-
-.astrbot-platform-table {
-  overflow-x: auto;
-}
-
-.astrbot-platform-table td:first-child {
+.astrbot-instance-card-head > div { min-width: 0; }
+.astrbot-instance-name {
+  margin: 0;
+  color: var(--ink);
+  font: 650 15px/1.4 var(--sans);
   overflow-wrap: anywhere;
 }
+.astrbot-instance-card .astrbot-description { overflow-wrap: anywhere; }
 
 .astrbot-loadfail {
   display: flex;
@@ -253,11 +261,11 @@
 
 @container webui-content (max-width: 560px) {
   .astrbot-panel-head,
-  .astrbot-connection-summary,
   .astrbot-layout,
-  .astrbot-platform-toolbar,
-  .astrbot-platform-overview,
   .astrbot-platform-results { padding-inline: 14px; }
+
+  .astrbot-panel-head { flex-wrap: wrap; gap: 6px 12px; }
+  .astrbot-address-fields { grid-template-columns: minmax(0, 1fr); }
 
   .astrbot-toggles,
   .astrbot-duo {

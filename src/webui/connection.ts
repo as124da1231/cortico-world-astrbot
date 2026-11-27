@@ -1,12 +1,12 @@
 /**
  * 连接：World 自己的桥地址、密钥、开关和重连参数。
  *
- * QQ 和 Discord 共用一条桥，配置与连接诊断放在一起。
+ * 管理 AstrBot 桥连接参数和运行状态。
  * 群聊/私聊/工具/语音属于 AstrBot，不在这里重复。
  */
 
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
-import { autoload, saveBar } from './shared.ts';
+import { autoload, bridgeHeader, saveBar } from './shared.ts';
 import type { ConnectionState } from './types.ts';
 import { bridgeAddressError, bridgeCredentialError, LOCAL_BRIDGE_URL, usesRemotePlaintextBridge } from '../config.ts';
 
@@ -31,6 +31,10 @@ function modeCard(
 ): HTMLElement {
   const { ui } = ctx;
   const card = ui.h('div', 'astrbot-mode');
+  if (st.instancePolicies) {
+    card.append(ui.section('实例模式', '在 AstrBot 的「Coo 桥控制台 → 实例接入」切换。Coo 会同步每个实例的模式。'));
+    return card;
+  }
   const active = st.mode === 'safe' ? '安全模式' : '完整模式';
   const next = st.mode === 'safe' ? 'full' : 'safe';
   const nextName = next === 'safe' ? '安全模式' : '完整模式';
@@ -41,7 +45,7 @@ function modeCard(
   feedback.setAttribute('role', 'status');
   const button = ui.button(`切换为${nextName}`, { size: 'sm' });
   button.disabled = st.switching || !st.modeSynced || st.modeApprovalPending;
-  if (st.modeApprovalPending) feedback.textContent = '等待审批。请在 AstrBot 的「Coo 桥控制台 → 连接」确认开放范围。';
+  if (st.modeApprovalPending) feedback.textContent = '等待审批。请在 AstrBot 的「Coo 桥控制台 → 连接与令牌」确认开放范围。';
   else if (st.mode === 'safe' && !st.ownerBound) feedback.textContent = '在 AstrBot 的「Coo 桥控制台 → QQ」绑定主人私聊。';
   button.addEventListener('click', async () => {
     if (isDirty()) {
@@ -94,7 +98,7 @@ function diagnosticsCard(
   );
   if (st.modeSynced && st.mode === 'full') {
     card.body.append(
-      ui.section('桌面权限', '在 AstrBot 的「Coo 桥控制台 → QQ」调整。'),
+      ui.section('桌面权限', st.instancePolicies ? '在 AstrBot 的「Coo 桥控制台 → 实例接入」调整。' : '在 AstrBot 的「Coo 桥控制台」调整。'),
       ui.kv([
         { k: '主人工具', v: st.ownerTools ? '已授权' : '未授权' },
         { k: '主动发送', v: st.desktopSend ? '已授权' : '未授权' },
@@ -249,7 +253,7 @@ function settingsCard(
       await ctx.invoke('reconnect');
       reload();
     } catch {
-      ui.toast('暂时无法重连 AstrBot，请等当前 QQ 处理结束后重试。', 'bad');
+      ui.toast('暂时无法重连 AstrBot，请等当前 AstrBot 会话处理结束后重试。', 'bad');
     } finally {
       setSaving(false);
     }
@@ -331,7 +335,7 @@ function settingsCard(
     transportNote,
     ui.field('桥接令牌（Token）', tokenInput),
     tokenActions,
-    ui.msgline('跨机时，从 AstrBot 的「Coo 桥控制台 → 连接」复制访问令牌。同机回环可留空。'),
+    ui.msgline('跨机时，从 AstrBot 的「Coo 桥控制台 → 连接与令牌」复制访问令牌。同机回环可留空。'),
   );
 
   const toggles = ui.h('div', 'astrbot-toggles');
@@ -370,7 +374,7 @@ export const connectionPanel: WebUiPanel = {
       void ctx.invoke<ConnectionState>('state').then((state) => {
         if (!snapshot || dirty.value || dirty.busy || ctx.signal.aborted) return;
         if (state.enabled !== snapshot.enabled || state.mode !== snapshot.mode || state.modeApprovalPending !== snapshot.modeApprovalPending
-          || state.modeSynced !== snapshot.modeSynced || state.switching !== snapshot.switching
+          || state.instancePolicies !== snapshot.instancePolicies || state.modeSynced !== snapshot.modeSynced || state.switching !== snapshot.switching
           || state.connected !== snapshot.connected || state.ownerBound !== snapshot.ownerBound
           || state.ownerTools !== snapshot.ownerTools || state.desktopSend !== snapshot.desktopSend
           || state.connectionError !== snapshot.connectionError
@@ -390,11 +394,7 @@ export const connectionPanel: WebUiPanel = {
         refresh = reload;
         const { ui } = ctx;
         const panel = ui.h('div', 'astrbot-panel astrbot-workspace');
-        const heading = ui.h('header', 'astrbot-panel-head');
-        const headingText = ui.h('div');
-        headingText.append(ui.h('h3', 'astrbot-panel-title', 'AstrBot 桥接'));
-        heading.append(headingText);
-        if (st.version) heading.append(ui.h('span', 'astrbot-version', st.version));
+        const heading = bridgeHeader(ctx, '连接与令牌', st.version);
         const settings = settingsCard(ctx, st, reload, dirty);
         const summary = ui.h('section', 'astrbot-connection-summary');
         const summaryLine = ui.h('div', 'astrbot-connection-line');
@@ -404,13 +404,13 @@ export const connectionPanel: WebUiPanel = {
           ui.h('span', 'astrbot-endpoint', st.wsUrl || '尚未设置桥地址'),
         );
         summaryLine.append(endpoint, settings.retry);
-        summary.append(summaryLine);
+        summary.append(ui.section('连接状态'), summaryLine);
         if (st.connectionError) summary.append(ui.msgline(st.connectionError, true));
         const layout = ui.h('div', 'astrbot-layout');
         const aside = ui.h('div', 'astrbot-connection-aside');
-        aside.append(modeCard(ctx, st, reload, () => dirty.value || dirty.busy), diagnosticsCard(ctx, st));
+        aside.append(summary, modeCard(ctx, st, reload, () => dirty.value || dirty.busy), diagnosticsCard(ctx, st));
         layout.append(settings.el, aside);
-        panel.append(heading, summary, layout);
+        panel.append(heading, layout);
         return [panel];
       },
     });

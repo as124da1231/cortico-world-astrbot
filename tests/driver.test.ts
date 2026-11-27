@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { once } from 'node:events';
 import { createServer, type Server, type Socket } from 'node:net';
 import { WebSocketServer } from 'ws';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bridgeAddressError, bridgeCredentialError, usesRemotePlaintextBridge } from '../src/config.ts';
 import { AstrbotBridgeDriver, AUTH_REJECT_MIN_BACKOFF_MS, parseMessage, parseUmo } from '../src/driver.ts';
 
@@ -22,6 +22,18 @@ function hangingServer(): Promise<{ server: Server; port: number; sockets: Socke
     });
   });
 }
+
+it('accepts a native adapter from its UMO and requires a route for non-QQ frames', () => {
+  const frame = {
+    t: 'msg', channel: 'wecom_ai_bot', umo: 'work:FriendMessage:wecomai:zhangsan',
+    conv: { kind: 'private', id: 'wecomai:zhangsan' }, sender: { id: 'zhangsan' }, text: '你好',
+  };
+  expect(parseMessage(frame)).toMatchObject({
+    channel: 'wecom_ai_bot', conv: { umo: frame.umo, id: 'wecomai:zhangsan' },
+    sender: { id: 'zhangsan' },
+  });
+  expect(parseMessage({ ...frame, umo: undefined })).toBeNull();
+});
 
 describe('AstrbotBridgeDriver 握手', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -69,6 +81,26 @@ describe('AstrbotBridgeDriver 握手', () => {
     expect(handshake.path).toBe('/');
     expect(handshake.frame).toMatchObject({ t: 'hello', v: 3 });
     expect(handshake.frame).not.toHaveProperty('token');
+  });
+
+  it('通过心跳发现原生实例，并保留实例的接入状态', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await once(server, 'listening');
+    const { port } = server.address() as { port: number };
+    const driver = new AstrbotBridgeDriver({ wsUrl: `ws://127.0.0.1:${port}` });
+    cleanup = async () => {
+      await driver.stop();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    };
+    const qq = { id: 'qq-test', channel: 'qq', adapterType: 'aiocqhttp', enabled: true, ownerBound: true };
+    const added = { id: 'new-test', channel: 'telegram', adapterType: 'telegram', enabled: false, ownerBound: false };
+    server.once('connection', socket => socket.once('message', () => {
+      socket.send(JSON.stringify({ t: 'ready', v: 3, platformRoutes: [qq] }));
+      socket.send(JSON.stringify({ t: 'tick', platformRoutes: [qq, added] }));
+      socket.send(JSON.stringify({ t: 'tick' }));
+    }));
+    await driver.start();
+    await vi.waitFor(() => expect(driver.platformRoutes).toEqual([qq, added]));
   });
 
   it('对端只接 TCP 不回 Upgrade 时，start 仍会在超时后返回', async () => {

@@ -29,7 +29,7 @@ export function convOfEvent(e: EventEnvelope): Conv | undefined {
     ...(umo ? { umo } : {}),
     kind,
     id: String(raw.id ?? ''),
-    ...(e.meta?.channel === 'discord' ? { channel: 'discord' as const } : {}),
+    ...(typeof e.meta?.channel === 'string' && e.meta.channel !== 'qq' ? { channel: e.meta.channel } : {}),
     name: raw.name === undefined ? undefined : String(raw.name),
   };
 }
@@ -38,7 +38,7 @@ function inConv(e: EventEnvelope, conv: Conv): boolean {
   const c = convOfEvent(e);
   if (!c) return false;
   if (conv.umo) return c.umo === conv.umo;
-  return c.channel !== 'discord' && c.kind === conv.kind && c.id === conv.id;
+  return (!conv.channel || conv.channel === 'qq') && !c.channel && c.kind === conv.kind && c.id === conv.id;
 }
 
 const BASE: EventRangeQuery = { source: 'astrbot', origin: 'external' };

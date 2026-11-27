@@ -30,13 +30,32 @@ export interface Conv {
   name?: string;
 }
 
-export type BridgeChannel = 'qq' | 'discord';
+export type BridgeChannel = string;
 
 export interface PlatformRoute {
   id: string;
-  channel: BridgeChannel;
+  channel: string;
+  adapterType?: string;
+  name?: string;
   enabled: boolean;
   ownerBound: boolean;
+  mode?: BridgeMode;
+  astrbotEnabled?: boolean;
+  replyTextOnly?: boolean;
+  replySupported?: boolean;
+}
+
+function readPlatformRoutes(raw: unknown): PlatformRoute[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((entry): entry is PlatformRoute =>
+    entry && typeof entry.id === 'string' && typeof entry.channel === 'string' && entry.channel.length > 0 &&
+    (entry.adapterType === undefined || typeof entry.adapterType === 'string') &&
+    (entry.name === undefined || typeof entry.name === 'string') &&
+    (entry.mode === undefined || entry.mode === 'safe' || entry.mode === 'full') &&
+    (entry.astrbotEnabled === undefined || typeof entry.astrbotEnabled === 'boolean') &&
+    (entry.replyTextOnly === undefined || typeof entry.replyTextOnly === 'boolean') &&
+    (entry.replySupported === undefined || typeof entry.replySupported === 'boolean') &&
+    typeof entry.enabled === 'boolean' && typeof entry.ownerBound === 'boolean');
 }
 
 /** 桥推进来的一条消息。字段保持扁平，语义由 World 解释。 */
@@ -168,6 +187,7 @@ export interface BridgeDriver {
   readonly desktopSend?: boolean;
   readonly ownerBound?: boolean;
   readonly platformRoutes?: PlatformRoute[];
+  readonly instancePolicies?: boolean;
   readonly modeApprovalPending?: boolean;
   readonly connectionError?: string;
   /** 桥自报的语音能力；没收到时按不可用。 */
@@ -300,6 +320,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
   desktopSend = false;
   ownerBound = false;
   platformRoutes?: PlatformRoute[];
+  instancePolicies = false;
   modeApprovalPending = false;
   private modeOffer?: { mode: BridgeMode; revision: string };
   connectionError?: string;
@@ -527,6 +548,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
     this.desktopSend = false;
     this.ownerBound = false;
     this.platformRoutes = undefined;
+    this.instancePolicies = false;
     this.modeOffer = undefined;
     let ws: WebSocket;
     try {
@@ -748,9 +770,10 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       return;
     }
 
-    // 应用层心跳：只用来刷新活跃时间，不需要进 World。
+    // 旧桥的心跳只刷新活跃时间。新版心跳还同步 AstrBot 的实例列表。
     if (t === 'tick') {
       if (typeof frame.modeApprovalPending === 'boolean') this.modeApprovalPending = frame.modeApprovalPending;
+      if (Array.isArray(frame.platformRoutes)) this.platformRoutes = readPlatformRoutes(frame.platformRoutes);
       return;
     }
 
@@ -837,11 +860,8 @@ export class AstrbotBridgeDriver implements BridgeDriver {
       this.ownerTools = frame.ownerTools === true;
       this.desktopSend = frame.desktopSend === true;
       this.ownerBound = frame.ownerBound === true;
-      this.platformRoutes = Array.isArray(frame.platformRoutes)
-        ? frame.platformRoutes.filter((entry): entry is PlatformRoute =>
-          entry && typeof entry.id === 'string' && (entry.channel === 'qq' || entry.channel === 'discord') &&
-          typeof entry.enabled === 'boolean' && typeof entry.ownerBound === 'boolean')
-        : undefined;
+      this.platformRoutes = readPlatformRoutes(frame.platformRoutes);
+      this.instancePolicies = frame.instancePolicies === true;
       this.modeApprovalPending = frame.modeApprovalPending === true;
       const self = frame.self as { id?: unknown; name?: unknown } | undefined;
       this.self = {
@@ -880,7 +900,7 @@ export class AstrbotBridgeDriver implements BridgeDriver {
           const umo = typeof r.umo === 'string' ? r.umo.trim() : '';
           if (!kind || !id || !umo) continue;
           const name = typeof r.name === 'string' && r.name.trim() ? r.name.trim() : undefined;
-          convs.push({ kind, id, umo, ...(name ? { name } : {}), ...(r.channel === 'discord' ? { channel: 'discord' } : {}) });
+          convs.push({ kind, id, umo, ...(name ? { name } : {}), ...(typeof r.channel === 'string' && r.channel ? { channel: r.channel } : {}) });
         }
       }
       for (const cb of this.readyCbs) cb(convs);
@@ -1039,8 +1059,8 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
   const umo = typeof umoRaw === 'string' && umoRaw.trim() !== '' ? umoRaw.trim() : undefined;
   const parsed = umo ? parseUmo(umo) : null;
   const channel = frame.channel;
-  if (channel !== undefined && channel !== 'qq' && channel !== 'discord') return null;
-  if (channel === 'discord' && !parsed) return null;
+  if (channel !== undefined && (typeof channel !== 'string' || !/^[a-zA-Z0-9_.-]{1,100}$/.test(channel))) return null;
+  if (channel && channel !== 'qq' && !parsed) return null;
   // 非法 UMO 不能把整条帧（尤其是撤回/入群通知）丢掉：退回 conv 记账，上层打 warn。
   const umoInvalid = Boolean(umo && !parsed);
   const safeUmo = parsed ? parsed.raw : undefined;
@@ -1076,7 +1096,7 @@ export function parseMessage(frame: Record<string, unknown>): BridgeMessage | nu
       ...(safeUmo ? { umo: safeUmo } : {}),
       kind,
       id,
-      ...(channel === 'discord' ? { channel } : {}),
+      ...(channel && channel !== 'qq' ? { channel } : {}),
       name: typeof convRaw?.name === 'string' ? convRaw.name : undefined,
     },
     sender: senderRaw

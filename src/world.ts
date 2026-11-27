@@ -164,8 +164,8 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'astrbot_send_message',
     description:
-      'Send a message into an authorized QQ or Discord conversation through AstrBot. ' +
-      'Use this tool for messages headed 【QQ群 …】, 【QQ私聊 …】, 【Discord 频道 …】 or 【Discord 私聊 …】. ' +
+      'Send a message into an authorized conversation through its AstrBot instance. ' +
+      'Use this tool when the current external message came from the AstrBot bridge, regardless of its platform. ' +
       'Local chat, pets and other Worlds keep their own reply tools. ' +
       'In an AstrBot turn you may omit conv_id to reply to that turn’s conversation. Outside an AstrBot turn ' +
       'desktop chat may send with a separate AstrBot grant, but only with ' +
@@ -226,8 +226,8 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
     name: 'astrbot_status',
     description:
       'Report the AstrBot bridge connection state, which channel the current turn came from, ' +
-      'whether QQ voice is available, and the QQ conversations seen in this session. ' +
-      'Call it when you are unsure whether this turn is a QQ turn.',
+      'voice availability, and the AstrBot conversations seen in this session. ' +
+      'Call it when you are unsure whether this turn came from AstrBot.',
     tags: ['read'],
     parameters: {
       type: 'object',
@@ -239,7 +239,7 @@ export const ASTRBOT_TOOL_DECLS: ReadonlyArray<Omit<ToolDef, 'handler'>> = [
   {
     name: 'astrbot_read_history',
     description:
-      'Read the AstrBot messages this bot has seen in the authorized QQ or Discord conversation, or those ' +
+      'Read AstrBot messages this bot has seen in the authorized conversation, or those ' +
       'containing a keyword. Use it when someone refers to something said earlier.',
     tags: ['read'],
     parameters: {
@@ -384,22 +384,22 @@ export class AstrbotWorld implements World {
     const safe = this.driver?.mode !== 'full';
     const scope = safe
       ? '仅接入已授权的主人私聊。只能回复本轮私聊和读取该私聊资料。'
-      : '群范围、私聊范围、仅被叫/全部消息、工具权限由 AstrBot 管理。';
+      : '每个实例有自己的模式、会话范围和唤醒规则，发送与工具权限由 AstrBot 校验。';
 
     const convList =
       safe || this.convs.size === 0
         ? ''
         : [...this.convs.values()]
-            .map((c) => `- ${c.channel === 'discord' ? 'Discord' : 'QQ'} ${c.kind === 'group' ? '群或频道' : '私聊'} UMO=${c.umo ?? c.id}`)
+            .map((c) => `- ${this.channelName(c.channel)} ${c.kind === 'group' ? '群或频道' : '私聊'} UMO=${c.umo ?? c.id}`)
             .join('\n');
 
     const last = !safe && this.lastConv
-      ? `${this.lastConv.channel === 'discord' ? 'Discord' : 'QQ'} ${this.lastConv.kind === 'group' ? '群或频道' : '私聊'} UMO=${this.lastConv.umo ?? this.lastConv.id}`
+      ? `${this.channelName(this.lastConv.channel)} ${this.lastConv.kind === 'group' ? '群或频道' : '私聊'} UMO=${this.lastConv.umo ?? this.lastConv.id}`
       : '';
 
     const owners = safe ? [] : this.driver?.ownerIds ?? [];
     const owner = owners.length
-      ? `AstrBot 的管理员 QQ 帐号为 ${owners.join('、')}。每位发言者的身份以收到的 QQ 消息为准。`
+      ? `AstrBot 上报的管理员 ID 为 ${owners.join('、')}。发言者的身份以当前实例的原生消息为准。`
       : '桥未提供 AstrBot 管理员名单，按实际消息来源辨认发言者。';
 
     const tools = !safe && this.toolList.length
@@ -430,6 +430,7 @@ export class AstrbotWorld implements World {
 
   private platformState() {
     return {
+      version: EXTENSION_VERSION,
       enabled: this.opts.cfg.enabled !== false,
       connected: this.connected,
       platformRoutes: this.connected ? this.driver?.platformRoutes ?? null : null,
@@ -441,9 +442,9 @@ export class AstrbotWorld implements World {
     const cfg = this.opts.cfg;
     return {
       ...this.platformState(),
-      version: EXTENSION_VERSION,
       mode: this.driver?.mode,
       modeKnown: !!this.driver?.modeRevision,
+      instancePolicies: this.driver?.instancePolicies === true,
       modeSynced: this.connected && !!this.driver?.modeRevision,
       switching: this.switching || this.refreshingTools,
       modeApprovalPending: this.driver?.modeApprovalPending === true,
@@ -472,12 +473,12 @@ export class AstrbotWorld implements World {
         {
           id: 'connection',
           title: '连接',
-          description: '设置 QQ 和 Discord 共用的桥地址、令牌和重连参数，查看桥接状态。',
+          description: '设置桥接地址、访问令牌和重连参数，查看连接状态。',
         },
         {
           id: 'platforms',
-          title: '平台',
-          description: '查看 AstrBot 上报的 QQ、Discord 实例及主人私聊绑定状态。',
+          title: '平台实例',
+          description: '查看 AstrBot 上报的实例、接入模式和主人私聊绑定状态。',
         },
       ],
       invoke: async (panel, method, args) => {
@@ -512,7 +513,7 @@ export class AstrbotWorld implements World {
         {
           key: 'worlds.astrbot.envPrompt',
           title: 'AstrBot · 环境提示词',
-          description: '说明你在哪些 QQ 会话里、什么时候会被叫到，以及怎么回话。',
+          description: '说明 AstrBot 的各个实例如何接入对话、唤醒和回复。',
           path: ENV_PROMPT_FILE,
           role: 'envPrompt',
           vars: [
@@ -520,7 +521,7 @@ export class AstrbotWorld implements World {
             { name: 'astrbot.scope', description: '当前的消息范围与称呼设置。' },
             { name: 'astrbot.self', description: '桥自报的 bot 名字，未连接时为空。' },
             { name: 'astrbot.owner', description: '桥上报的 AstrBot 管理员名单。' },
-            { name: 'astrbot.conversations', description: '本次会话里见过的 QQ 会话。' },
+            { name: 'astrbot.conversations', description: '本次对话里见过的 AstrBot 会话。' },
             { name: 'astrbot.lastConversation', description: '最后一条消息所在的会话。' },
             { name: 'astrbot.tools', description: '桥那边启用的工具清单，没有时说明为空。' },
           ],
@@ -543,7 +544,7 @@ export class AstrbotWorld implements World {
         token: cfg.token,
         capabilities: {
           images: this.acceptsImages(host), message_segments: true, component_media: true,
-          component_audio: true, message_delivery_ack: true, multi_platform: true,
+          component_audio: true, message_delivery_ack: true, multi_platform: true, instance_policies: true,
         },
         requireModeSync: true,
         acceptMode: mode => this.acceptModeForMountedTools(mode),
@@ -650,6 +651,7 @@ export class AstrbotWorld implements World {
 
   private async switchMode(mode: BridgeMode): Promise<void> {
     const driver = this.driver;
+    if (driver?.instancePolicies) throw new Error("请在 AstrBot 的「实例接入」中切换实例模式");
     if (!driver?.changeMode || this.switching) throw new Error('桥未连接或正在切换');
     this.switching = true;
     try {
@@ -884,7 +886,7 @@ export class AstrbotWorld implements World {
 
     if (!msg.conv.umo && msg.umo) msg.conv.umo = msg.umo;
     const channel = msg.channel ?? msg.conv.channel ?? 'qq';
-    if (channel === 'discord') {
+    if (channel !== 'qq') {
       if (!msg.conv.umo || msg.umoInvalid || msg.convMismatch) return false;
       msg.conv.channel = channel;
     }
@@ -946,14 +948,13 @@ export class AstrbotWorld implements World {
     const isOwner = msg.owner === true;
     // 渠道放在行首，和 qq-final 的【QQ群 …】对齐：不用读上下文就知道这条从哪来。
     const tags: string[] = [];
-    const service = channel === 'discord' ? 'Discord' : 'QQ';
+    const service = this.channelName(channel);
     if (senderId) tags.push(`${service}:${senderId}`);
     if (isOwner && !isNotice) tags.push('主人');
     if (!isPrivate && called) tags.push('@你');
     const clock = this.opts.cfg.includeTime === false ? '' : hhmm(msg.ts);
-    const label = channel === 'discord'
-      ? (isPrivate ? 'Discord 私聊' : `Discord 频道 ${convName}`)
-      : (isPrivate ? 'QQ私聊' : `QQ群 ${convName}`);
+    const label = channel === 'qq' ? (isPrivate ? 'QQ私聊' : 'QQ群 ' + convName)
+      : service + (isPrivate ? ' 私聊' : (channel === 'discord' ? ' 频道 ' : ' 群或频道 ') + convName);
     const head = `【${label}${clock ? ` ${clock}` : ''}】`;
     const idPart = msg.id ? `#${msg.id} ` : '';
     const senderTag = tags.length ? `(${tags.join(', ')})` : '';
@@ -981,11 +982,15 @@ export class AstrbotWorld implements World {
           source: this.id,
           origin: 'external',
           text: line,
-          senderKey: channel === 'discord' ? `${msg.conv.umo?.split(':', 1)[0]}:${senderId || senderName}` : msg.sender?.id ?? senderName,
+          senderKey: this.driver?.instancePolicies
+              ? JSON.stringify([msg.conv.umo?.split(':', 1)[0], senderId || senderName])
+              : channel !== 'qq'
+                ? (msg.conv.umo?.split(':', 1)[0] || channel) + ':' + (senderId || senderName)
+                : msg.sender?.id ?? senderName,
           ...(blobs.length > 0 ? { blobs } : {}),
           meta: {
             channel,
-            ...(channel === 'discord' && senderId ? { platformSenderId: senderId } : {}),
+            ...(senderId ? { platformSenderId: senderId } : {}),
             bridgeGeneration: generation,
             ...(msg.conv.umo || msg.umo ? { umo: msg.conv.umo ?? msg.umo } : {}),
             conv: {
@@ -1010,7 +1015,7 @@ export class AstrbotWorld implements World {
         isNotice
           ? { trigger: 'piggyback' }
           : isPrivate
-            ? isOwner || this.driver?.mode === 'safe'
+            ? isOwner || this.modeFor(msg.conv) === 'safe'
               ? { trigger: 'flush' }
               : undefined
             : called
@@ -1082,7 +1087,7 @@ export class AstrbotWorld implements World {
         source: this.id,
         origin: 'internal',
         text: connected
-          ? '与 AstrBot 的桥已连上，QQ 会话可以进出消息了。'
+          ? '与 AstrBot 的桥已连上，已获授权的平台实例可以收发消息。'
           : '与 AstrBot 的桥断开了，正在重连。',
         senderKey: this.id,
       })
@@ -1095,7 +1100,7 @@ export class AstrbotWorld implements World {
     return {
       ...CALL_TOOL_DECL,
       handler: async (raw, ctx) => {
-        if (this.switching || this.driver?.mode === 'safe' || this.turnMultiConv || (this.queueBusy && !this.qqTurnActive())) {
+        if (this.switching || this.modeFor(this.qqTurnActive() ? this.turnConv : undefined) === 'safe' || this.turnMultiConv || (this.queueBusy && !this.qqTurnActive())) {
           return { text: '当前模式或消息范围不允许调用通用 AstrBot 工具。', failed: true };
         }
         const name = typeof raw.name === 'string' ? raw.name.trim() : '';
@@ -1131,7 +1136,7 @@ export class AstrbotWorld implements World {
         } else {
           actor = this.ownerActor(driver);
           if (!actor) {
-            return { text: '请在 AstrBot 管理页授权桌面对话使用主人 QQ 和工具。', failed: true };
+            return { text: '请在 AstrBot 管理页授权对应实例的桌面主人工具。', failed: true };
           }
         }
         const res = await driver.callTool(name, args, turn, actor, this.turnConv?.umo);
@@ -1174,7 +1179,7 @@ export class AstrbotWorld implements World {
         // - QQ 轮次：可以隐式回触发会话；
         // - 非 QQ 轮次：只有配置了主人 QQ，且目标是桥见过的会话，才允许主动发送。
         const qqTurn = this.qqTurnActive();
-        const safe = this.driver?.mode === 'safe';
+        const safe = this.modeFor(qqTurn ? this.turnConv : undefined) === 'safe';
         if (safe && (!qqTurn || this.turnConv?.kind !== 'private' || handle)) {
           return { text: '安全模式只允许向当前主人私聊回复文字或语音。', failed: true };
         }
@@ -1220,8 +1225,12 @@ export class AstrbotWorld implements World {
           };
         }
 
-        if (conv.channel === 'discord' && Array.isArray(args.at) && args.at.includes('all')) {
-          return { text: 'Discord 频道只允许点名具体成员。', failed: true };
+        const route = driver.platformRoutes?.find(route => route.id === conv.umo?.split(':', 1)[0]);
+        if (route?.replyTextOnly && (voice || handle || Array.isArray(args.at) && args.at.length > 0)) {
+          return { text: '该实例支持原会话文字回复。请发文字。', failed: true };
+        }
+        if (conv.channel && conv.channel !== 'qq' && Array.isArray(args.at) && args.at.includes('all')) {
+          return { text: '该平台只允许点名具体成员。', failed: true };
         }
         const at = parseMentions(args.at, this.opts.cfg.allowAtAll === true);
         if (!at.ok) return { text: at.reason, failed: true };
@@ -1315,7 +1324,7 @@ export class AstrbotWorld implements World {
     if (bound) {
       if (opts.requireUmo && !bound.umo) return { error: '桥还没见过这个会话（没有 UMO）。' };
       if (id && id !== bound.id && id !== bound.umo || args.conv_kind && args.conv_kind !== bound.kind) {
-        return { error: bound.channel === 'discord' ? '只能操作当前 Discord 会话。' : '只能操作当前 QQ 会话。' };
+        return { error: '只能操作当前 ' + this.channelName(bound.channel) + ' 会话。' };
       }
       return { conv: bound };
     }
@@ -1376,10 +1385,25 @@ export class AstrbotWorld implements World {
     return !!grant && grant.until > Date.now() && grant.msgId === this.turnMsgId;
   }
 
+  private modeFor(conv?: Conv): BridgeMode | undefined {
+    const instance = conv?.umo?.split(':', 1)[0];
+    if (instance && this.driver?.instancePolicies) {
+      return this.driver.platformRoutes?.find(route => route.id === instance && route.enabled)?.mode ?? 'safe';
+    }
+    return this.driver?.mode;
+  }
+
+  private channelName(channel?: string): string {
+    if (!channel || channel === 'qq') return 'QQ';
+    if (channel === 'discord') return 'Discord';
+    if (channel === 'wecom_ai_bot') return '企业微信';
+    return this.driver?.platformRoutes?.find(route => route.channel === channel)?.adapterType || channel;
+  }
+
   private readTarget(args: Record<string, unknown>): { conv?: Conv; error?: string } {
     if (this.switching || this.turnMultiConv || this.turnExpired() || (this.queueBusy && !this.qqTurnActive())
-      || (this.driver?.mode === 'safe' && (!this.qqTurnActive() || this.turnConv?.kind !== 'private'))) {
-      return { error: '无法确认本轮的 QQ 读取授权。' };
+      || (this.modeFor(this.qqTurnActive() ? this.turnConv : undefined) === 'safe' && (!this.qqTurnActive() || this.turnConv?.kind !== 'private'))) {
+      return { error: '无法确认本轮的 AstrBot 读取授权。' };
     }
     return this.pickConv(args, { bound: this.qqTurnActive() ? this.turnConv : undefined });
   }
@@ -1406,13 +1430,13 @@ export class AstrbotWorld implements World {
       ts: nowIso(this.opts.timezone), text, blobs,
       meta: conv ? { umo: conv.umo, ...(conv.channel ? { channel: conv.channel } : {}) } : undefined,
     };
-    const service = conv?.channel === 'discord' ? 'Discord' : 'QQ';
+    const service = this.channelName(conv?.channel);
     if (this.host && ctx.queueExternalEvents && (kind === 'qq' || this.driver?.modeRevision)) {
       const record = await this.host.pushEvent(data, { deliver: false });
       ctx.queueExternalEvents([record]);
       return `已读取，内容见随本次调用返回的 ${service} 外部资料。`;
     }
-    const header = service === 'Discord' ? '【AstrBot 桥 · Discord 外部资料】' : QQ_EXTERNAL_DATA_HEADER;
+    const header = service === 'QQ' ? QQ_EXTERNAL_DATA_HEADER : '【AstrBot 桥 · ' + service + ' 外部资料】';
     const reply = kind === 'qq' ? `${header}\n${text}` : text;
     return blobs.length ? { text: reply, blobs } : reply;
   }
@@ -1430,7 +1454,7 @@ export class AstrbotWorld implements World {
         }
         const conv = picked.conv;
         if (!conv) {
-          return { text: '没有当前 QQ 会话，请显式指定目标。', failed: true };
+          return { text: '没有当前 AstrBot 会话，请显式指定目标。', failed: true };
         }
         if (!await this.authorizeRead(conv)) return { text: '该会话未获读取授权。', failed: true };
 
@@ -1464,11 +1488,11 @@ export class AstrbotWorld implements World {
           return { text: '请提供消息号和有效的组件位置。', failed: true };
         }
         const { conv, error } = this.readTarget(args);
-        if (!conv) return { text: error || '请指定这条消息所在的 QQ 会话。', failed: true };
+        if (!conv) return { text: error || '请指定这条消息所在的 AstrBot 会话。', failed: true };
         if (this.qqTurnActive() && (!this.turnConv || this.turnMultiConv ||
             (this.turnConv.umo && conv.umo ? this.turnConv.umo !== conv.umo :
               this.turnConv.kind !== conv.kind || this.turnConv.id !== conv.id))) {
-          return { text: '只可查看当前 QQ 会话中的组件。', failed: true };
+          return { text: '只可查看当前会话中的组件。', failed: true };
         }
         if (!await this.authorizeRead(conv)) return { text: '该会话未获读取授权。', failed: true };
         const event = findMessage(host.store, conv, id);
@@ -1548,26 +1572,26 @@ export class AstrbotWorld implements World {
         if (EXTENSION_VERSION) lines.push(`版本：${EXTENSION_VERSION}`);
         lines.push(`桥地址：${cfg.wsUrl && !bridgeAddressError(cfg.wsUrl.trim()) ? cfg.wsUrl : '（未配置或不可用）'}`);
         lines.push(`连接：${this.connected ? '已连上' : '未连上'}`);
-        lines.push(this.driver?.platformRoutes?.some(route => route.channel === 'discord' && route.enabled)
-          ? '渠道：QQ / Discord（经 AstrBot 桥）' : '渠道：QQ（经 AstrBot 桥）');
+        const channels = this.driver?.platformRoutes?.filter(route => route.enabled).map(route => this.channelName(route.channel));
+        lines.push('平台：' + (channels ? [...new Set(channels)].join(' / ') || '暂无接入实例' : 'QQ') + '（经 AstrBot 桥）');
 
         const convName = (c: Conv): string =>
-          c.channel === 'discord'
-            ? `Discord ${c.kind === 'group' ? '频道' : '私聊'}「${c.name ?? c.id}」`
+          c.channel && c.channel !== 'qq'
+            ? `${this.channelName(c.channel)} ${c.kind === 'group' ? '频道' : '私聊'}「${c.name ?? c.id}」`
             : c.kind === 'group' ? `QQ群「${c.name ?? c.id}」` : `QQ私聊「${c.name ?? c.id}」`;
         if (this.lastInbound) {
           const t = hhmm(this.lastInbound.ts);
           lines.push(`最近收到：${convName(this.lastInbound.conv)} ${this.lastInbound.sender}${t ? ` ${t}` : ''}`);
         } else {
-          lines.push('最近收到：还没有 QQ 消息');
+          lines.push('最近收到：还没有 AstrBot 消息');
         }
         if (this.qqTurnActive()) {
-          const where = this.turnConv ? convName(this.turnConv) : 'QQ';
+          const where = this.turnConv ? convName(this.turnConv) : 'AstrBot';
           lines.push(`这一轮：${where}，回复用 astrbot_send_message。`);
         } else {
           lines.push(
-            '这一轮：没有投递过 QQ 消息（可能是桌宠事件或 Coo 对话）。' +
-              '这一轮不是 QQ；要主动发，用 conv_id/reply_to 指定已见过的会话，' +
+            '这一轮没有收到 AstrBot 消息。' +
+              '要主动发，用 conv_id/reply_to 指定已见过的会话，' +
               '并在 AstrBot 桥插件中授权桌面主动发送及目标会话。',
           );
         }

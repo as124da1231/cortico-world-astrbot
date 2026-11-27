@@ -1,86 +1,57 @@
 import type { WebUiPanel, WebUiPanelContext } from 'cortico/web/shared/client-panel.ts';
-import { autoload } from './shared.ts';
+import { autoload, bridgeHeader } from './shared.ts';
 import type { PlatformState } from './types.ts';
-import type { BridgeChannel } from '../driver.ts';
-
-const PLATFORMS = {
-  qq: {
-    label: 'QQ',
-    description: '通过 AstrBot 在 QQ 群聊和私聊中接续 Coo 主对话。',
-  },
-  discord: {
-    label: 'Discord',
-    description: '通过 AstrBot 在 Discord 主人私聊和获准频道中接续 Coo 主对话。',
-  },
-} satisfies Record<BridgeChannel, { label: string; description: string }>;
 
 function renderPlatforms(ctx: WebUiPanelContext, initial: PlatformState) {
   const { ui } = ctx;
   const panel = ui.h('div', 'astrbot-panel astrbot-workspace');
-  const heading = ui.h('header', 'astrbot-panel-head');
-  const connectionLink = ui.h('a', 'btn sm astrbot-connection-link', '连接设置');
-  connectionLink.href = `#/provider/${encodeURIComponent(ctx.pageId)}/connection`;
-  heading.append(ui.h('h3', 'astrbot-panel-title', '平台接入'), connectionLink);
-  const toolbar = ui.rowbar();
-  toolbar.classList.add('astrbot-platform-toolbar');
-
-  const overview = ui.h('header', 'astrbot-platform-overview');
-  const identity = ui.h('div');
-  const title = ui.h('h3', 'astrbot-panel-title');
-  const description = ui.h('p', 'astrbot-description');
-  identity.append(title, description);
+  const heading = bridgeHeader(ctx, '机器人实例', initial.version);
+  const overview = ui.h('div', 'astrbot-directory-heading');
+  const summary = ui.h('p', 'astrbot-description', '在 AstrBot 的「Coo 桥控制台」管理每个机器人的接入权限。');
   const status = ui.h('div', 'astrbot-platform-status');
   status.setAttribute('role', 'status');
-  overview.append(identity, status);
-
-  const sheet = ui.sheet({ title: '平台实例' });
-  const instances = ui.table({ head: ['实例 ID', '桥接状态', '主人私聊'] });
-  instances.el.classList.add('astrbot-platform-table');
+  overview.append(summary, status);
+  const results = ui.h('div', 'astrbot-platform-results');
+  const directory = ui.h('div', 'astrbot-instance-cards');
   const unavailable = ui.placeholder('');
   const refreshError = ui.msgline('', true);
   refreshError.setAttribute('role', 'status');
-  const management = ui.h('p', 'astrbot-description astrbot-platform-management');
-  sheet.body.append(instances.el, unavailable, management, refreshError);
-  const results = ui.h('div', 'astrbot-platform-results');
-  results.append(sheet.el);
+  results.append(overview, directory, unavailable, refreshError);
 
-  let selected: BridgeChannel = ctx.memo.get<string>('astrbotPlatform', 'qq') === 'discord' ? 'discord' : 'qq';
+  const labels: Record<string, string> = { aiocqhttp: 'QQ', discord: 'Discord', wecom_ai_bot: '企业微信', telegram: 'Telegram' };
   let state = initial;
   const render = (): void => {
-    const platform = PLATFORMS[selected];
-    const routes = (state.platformRoutes ?? []).filter((route) => route.channel === selected);
+    const routes = state.platformRoutes ?? [];
     const hasReport = state.connected && state.platformRoutes != null;
-    title.textContent = platform.label;
-    description.textContent = platform.description;
     const active = routes.filter(route => route.enabled).length;
-    const statusLabel = !state.enabled ? '桥接未启用' : !state.connected ? '等待连接' : hasReport ? `${active} / ${routes.length} 已启用` : '桥接已连接';
+    const statusLabel = !state.enabled ? '桥接未启用' : !state.connected ? '等待连接'
+      : hasReport ? active + ' / ' + routes.length + ' 已接入' : '桥接已连接';
     status.replaceChildren(ui.pill(statusLabel, active ? 'on' : 'plain'));
-    instances.el.hidden = !routes.length;
+    directory.hidden = !routes.length;
     unavailable.hidden = !!routes.length;
-    unavailable.textContent = !state.connected ? '连接后会自动同步平台实例。'
-      : hasReport ? `AstrBot 未上报 ${platform.label} 实例。` : '当前桥版本未提供平台实例明细。';
-    management.textContent = `在 AstrBot 的「Coo 桥控制台 → ${platform.label}」管理实例、主人绑定和会话范围。`;
-    instances.clear();
-    for (const route of routes) {
-      instances.addRow([
-        route.id,
-        ui.pill(route.enabled ? '已启用' : '未启用', route.enabled ? 'on' : 'off'),
-        ui.pill(route.ownerBound ? '已绑定' : '待绑定', route.ownerBound ? 'on' : 'plain'),
-      ]);
-    }
+    unavailable.textContent = !state.connected ? '连接后自动同步平台实例。'
+      : hasReport ? 'AstrBot 暂无机器人实例。' : '当前桥版本未提供平台实例明细。';
+    directory.replaceChildren(...routes.map(route => {
+      const card = ui.h('article', 'astrbot-instance-card');
+      const head = ui.h('div', 'astrbot-instance-card-head');
+      const name = ui.h('div');
+      const adapter = route.adapterType || route.channel;
+      name.append(ui.h('h4', 'astrbot-instance-name', route.name || route.id),
+        ui.h('p', 'astrbot-description', (labels[adapter] || adapter)
+          + (route.name && route.name !== route.id ? ' · ' + route.id : '')));
+      const label = route.enabled ? '已接入' : route.astrbotEnabled === false ? '机器人已停用'
+        : route.replySupported === false ? '无法原会话回复' : '待接入';
+      head.append(name, ui.pill(label, route.enabled ? 'on' : 'plain'));
+      card.append(head, ui.kv([
+        { k: '接入模式', v: route.enabled && route.mode ? route.mode === 'full' ? '完整模式' : '安全模式' : '—' },
+        { k: '主人私聊', v: route.ownerBound ? '已绑定' : route.enabled ? '待绑定' : '—' },
+      ]));
+      if (route.replyTextOnly && route.enabled) card.append(ui.msgline('支持原会话文字回复'));
+      return card;
+    }));
   };
 
-  const selector = ui.segmented([{ value: 'qq', label: PLATFORMS.qq.label }, { value: 'discord', label: PLATFORMS.discord.label }], {
-    value: selected,
-    size: 'sm',
-    onSelect: (value) => {
-      selected = value === 'discord' ? 'discord' : 'qq';
-      ctx.memo.set('astrbotPlatform', selected);
-      render();
-    },
-  });
-  toolbar.append(selector.el);
-  panel.append(heading, toolbar, overview, results);
+  panel.append(heading, results);
   render();
   return {
     panel,

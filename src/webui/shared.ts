@@ -154,3 +154,11 @@ export function saveBar(
     },
   };
 }
+
+export function bridgeHeader(ctx: WebUiPanelContext, title: string, version?: string): HTMLElement {
+  const { ui } = ctx;
+  const head = ui.h('header', 'astrbot-panel-head');
+  head.append(ui.h('h3', 'astrbot-panel-title', title));
+  if (version) head.append(ui.h('span', 'astrbot-version', version));
+  return head;
+}
